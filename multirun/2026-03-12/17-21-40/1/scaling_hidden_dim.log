@@ -1,0 +1,33 @@
+[2026-03-12 21:35:33,764][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 21:35:33,808][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 21:35:33,819][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/Salesforce/wikitext/b08601e04326c79dfdd32d625aee71d232d685c3/README.md "HTTP/1.1 200 OK"
+[2026-03-12 21:35:33,864][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 21:35:33,910][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 404 Not Found"
+[2026-03-12 21:35:34,102][httpx][INFO] - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/wikitext/wikitext.py "HTTP/1.1 200 OK"
+[2026-03-12 21:35:34,150][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 21:35:34,196][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 404 Not Found"
+[2026-03-12 21:35:34,375][httpx][INFO] - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=wikitext "HTTP/1.1 404 Not Found"
+[2026-03-12 21:35:34,428][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 21:35:34,472][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 404 Not Found"
+[2026-03-13 05:09:32,098][absl][INFO] - save_device_host_concurrent_bytes=None
+[2026-03-13 05:09:32,099][absl][INFO] - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0xf4cc79d4b500>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[2026-03-13 05:09:32,101][absl][INFO] - [process=0] Started saving checkpoint to /home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt.
+[2026-03-13 05:09:32,101][absl][INFO] - Specified `force`: removing existing directory.
+[2026-03-13 05:09:32,106][absl][INFO] - Creating tmp directory /home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt.orbax-checkpoint-tmp
+[2026-03-13 05:09:32,117][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.000206s
+[2026-03-13 05:09:32,118][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.StringHandler".serialize. Time taken: 0.000244s
+[2026-03-13 05:09:32,144][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.000391s
+[2026-03-13 05:09:32,149][absl][INFO] - Scheduling D2H of 15 prioritized jax.Array.
+[2026-03-13 05:09:32,150][absl][INFO] - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[2026-03-13 05:09:32,166][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.021347s
+[2026-03-13 05:09:32,169][absl][INFO] - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 657.524 MiB/s (total gbytes: 40.0 MiB) (time elapsed: 0.06089425086975098 s) (per-host)
+[2026-03-13 05:09:32,172][absl][INFO] - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.063558s (batch_requests_ready=0.008548s, total_serialization_initiated=0.049928s, others=0.005083s)
+[2026-03-13 05:09:32,172][absl][INFO] - [process=0][thread=MainThread][operation_id=2] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[2026-03-13 05:09:32,174][absl][INFO] - [process=0][thread=array_type_handler] Wrote 15 array_metadata.ArrayMetadata to /home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt.orbax-checkpoint-tmp/array_metadatas/process_0
+[2026-03-13 05:09:32,260][absl][INFO] - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.089079s (commit=0.086330s, array_metadata_write=0.002749s)
+[2026-03-13 05:09:32,262][absl][INFO] - [process=0] /jax/checkpoint/write/gbytes_per_sec: 260.513 MiB/s (total gbytes: 40.0 MiB) (time elapsed: 0.15369462966918945 s) (per-host)
+[2026-03-13 05:09:32,267][absl][INFO] - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[2026-03-13 05:09:32,280][absl][INFO] - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.016479s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt.orbax-checkpoint-tmp
+[2026-03-13 05:09:32,281][absl][INFO] - Renaming /home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt.orbax-checkpoint-tmp to /home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt
+[2026-03-13 05:09:32,283][absl][INFO] - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt`.
+[2026-03-13 05:09:32,283][absl][INFO] - Finished synchronous save in 0.18 seconds to /home/tarunak/scaling/checkpoints/hidden_dim=512/ckpt

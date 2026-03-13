@@ -1,0 +1,13 @@
+# Hydra multirun sweep for hidden_dim.
+# Usage:
+#   python -m lstm_scaling.experiments.scaling_hidden_dim -m --config-name sweep_hidden_dim
+
+defaults:
+  - base
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      hidden_dim: 256,512,1028,2048
+

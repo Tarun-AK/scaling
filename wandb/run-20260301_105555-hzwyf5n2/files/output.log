@@ -1,0 +1,42 @@
+[2026-03-01 12:15:37,119][absl][INFO] - orbax-checkpoint version: 0.11.33
+[2026-03-01 12:15:37,119][absl][INFO] - save_device_host_concurrent_bytes=None
+[2026-03-01 12:15:37,119][absl][INFO] - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0xe688a6cfadb0>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[2026-03-01 12:15:37,119][absl][INFO] - [thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+[2026-03-01 12:15:37,119][absl][INFO] - [process=0] Started saving checkpoint to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.
+[2026-03-01 12:15:37,130][HYDRA] 	#1 : hidden_dim=256
+/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/defaults_list.py:251: UserWarning: In 'sweep_hidden_dim': Defaults list is missing `_self_`. See https://hydra.cc/docs/1.2/upgrades/1.0_to_1.1/default_composition_order for more information
+  warnings.warn(msg, UserWarning)
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-01 12:15:37,163][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-01 12:15:37,164][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[34m[1mwandb[0m: wandb.init() called while a run is active and reinit is set to 'default', so returning the previous run.
+[2026-03-01 12:23:20,257][HYDRA] 	#2 : hidden_dim=512
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-01 12:23:20,663][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-01 12:23:20,700][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[34m[1mwandb[0m: wandb.init() called while a run is active and reinit is set to 'default', so returning the previous run.
+[2026-03-01 12:33:33,990][HYDRA] 	#3 : hidden_dim=1028
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-01 12:33:34,176][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-01 12:33:34,196][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[34m[1mwandb[0m: wandb.init() called while a run is active and reinit is set to 'default', so returning the previous run.
+[2026-03-01 12:42:49,989][HYDRA] 	#4 : hidden_dim=2048
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-01 12:42:53,984][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-01 12:42:53,988][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[34m[1mwandb[0m: wandb.init() called while a run is active and reinit is set to 'default', so returning the previous run.
+Error executing job with overrides: ['hidden_dim=128']
+Traceback (most recent call last):
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/home/tarunak/scaling/training/trainer.py", line 189, in train_and_evaluate
+    checkpointer.save(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/orbax/checkpoint/_src/checkpointers/checkpointer.py", line 254, in save
+    raise ValueError(f'Destination {directory} already exists.')
+ValueError: Destination /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt already exists.
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.

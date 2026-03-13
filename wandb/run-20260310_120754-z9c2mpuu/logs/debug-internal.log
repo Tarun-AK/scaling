@@ -1,0 +1,14 @@
+{"time":"2026-03-10T12:07:54.52444555-04:00","level":"INFO","msg":"stream: starting","core version":"0.25.0"}
+{"time":"2026-03-10T12:07:54.785549651-04:00","level":"INFO","msg":"stream: created new stream","id":"z9c2mpuu"}
+{"time":"2026-03-10T12:07:54.786093731-04:00","level":"INFO","msg":"stream: started","id":"z9c2mpuu"}
+{"time":"2026-03-10T12:07:54.786104035-04:00","level":"INFO","msg":"handler: started","stream_id":"z9c2mpuu"}
+{"time":"2026-03-10T12:07:54.786156004-04:00","level":"INFO","msg":"writer: started","stream_id":"z9c2mpuu"}
+{"time":"2026-03-10T12:07:54.78617514-04:00","level":"INFO","msg":"sender: started","stream_id":"z9c2mpuu"}
+{"time":"2026-03-10T12:26:46.154017886-04:00","level":"INFO","msg":"api: retrying HTTP error","status":500,"url":"https://api.wandb.ai/files/tarunadvaith-/scaling/z9c2mpuu/file_stream","body":"{\"error\":\"context deadline exceeded\"}"}
+{"time":"2026-03-10T12:31:38.572554811-04:00","level":"INFO","msg":"stream: closing","id":"z9c2mpuu"}
+{"time":"2026-03-10T12:31:38.572791212-04:00","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":544}
+{"time":"2026-03-10T12:31:38.575341222-04:00","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":35}
+{"time":"2026-03-10T12:31:39.36194844-04:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-03-10T12:31:39.720557381-04:00","level":"INFO","msg":"handler: closed","stream_id":"z9c2mpuu"}
+{"time":"2026-03-10T12:31:39.720617045-04:00","level":"INFO","msg":"sender: closed","stream_id":"z9c2mpuu"}
+{"time":"2026-03-10T12:31:39.720627445-04:00","level":"INFO","msg":"stream: closed","id":"z9c2mpuu"}

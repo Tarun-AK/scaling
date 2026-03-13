@@ -1,0 +1,13 @@
+jax[cuda13]
+flax
+optax
+orbax-checkpoint
+hydra-core
+omegaconf
+datasets
+transformers
+wandb
+numpy
+matplotlib
+pandas
+

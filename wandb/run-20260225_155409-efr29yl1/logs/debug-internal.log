@@ -1,0 +1,16 @@
+{"time":"2026-02-25T15:54:10.194583-05:00","level":"INFO","msg":"stream: starting","core version":"0.25.0"}
+{"time":"2026-02-25T15:54:10.415443-05:00","level":"INFO","msg":"stream: created new stream","id":"efr29yl1"}
+{"time":"2026-02-25T15:54:10.415786-05:00","level":"INFO","msg":"handler: started","stream_id":"efr29yl1"}
+{"time":"2026-02-25T15:54:10.417798-05:00","level":"INFO","msg":"stream: started","id":"efr29yl1"}
+{"time":"2026-02-25T15:54:10.418027-05:00","level":"INFO","msg":"sender: started","stream_id":"efr29yl1"}
+{"time":"2026-02-25T15:54:10.418045-05:00","level":"INFO","msg":"writer: started","stream_id":"efr29yl1"}
+{"time":"2026-02-25T19:15:16.171435-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/efr29yl1/file_stream\": read tcp 10.41.6.131:52570->35.186.228.49:443: read: operation timed out"}
+{"time":"2026-02-25T19:15:18.356677-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/efr29yl1/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2026-02-25T19:58:28.505485-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/efr29yl1/file_stream\": read tcp 192.168.50.101:52719->35.186.228.49:443: read: connection reset by peer"}
+{"time":"2026-02-25T21:11:59.853954-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/efr29yl1/file_stream\": read tcp 192.168.50.101:52805->35.186.228.49:443: read: can't assign requested address"}
+{"time":"2026-02-25T21:12:02.326221-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/efr29yl1/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2026-02-25T21:43:05.95175-05:00","level":"INFO","msg":"stream: closing","id":"efr29yl1"}
+{"time":"2026-02-25T21:43:06.616161-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-02-25T21:43:06.806322-05:00","level":"INFO","msg":"handler: closed","stream_id":"efr29yl1"}
+{"time":"2026-02-25T21:43:06.806698-05:00","level":"INFO","msg":"sender: closed","stream_id":"efr29yl1"}
+{"time":"2026-02-25T21:43:06.806734-05:00","level":"INFO","msg":"stream: closed","id":"efr29yl1"}

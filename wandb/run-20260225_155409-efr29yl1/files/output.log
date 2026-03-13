@@ -1,0 +1,51 @@
+Traceback (most recent call last):
+  File "/Users/tarun/phd/scaling/experiments/scaling_hidden_dim.py", line 37, in <module>
+    main()
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/main.py", line 94, in decorated_main
+    _run_hydra(
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 394, in _run_hydra
+    _run_app(
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 457, in _run_app
+    run_and_report(
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 220, in run_and_report
+    return func()
+           ^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 458, in <lambda>
+    lambda: hydra.run(
+            ^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/hydra.py", line 119, in run
+    ret = run_job(
+          ^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/Users/tarun/phd/scaling/training/trainer.py", line 201, in train_and_evaluate
+    metrics_host = {k: float(jax.device_get(v)) for k, v in metrics.items()}
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/training/trainer.py", line 201, in <dictcomp>
+    metrics_host = {k: float(jax.device_get(v)) for k, v in metrics.items()}
+                             ^^^^^^^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/jax/_src/api.py", line 2931, in device_get
+    return tree_map(_device_get, x)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/jax/_src/tree_util.py", line 369, in tree_map
+    return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/jax/_src/tree_util.py", line 369, in <genexpr>
+    return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
+                             ^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/jax/_src/api.py", line 2892, in _device_get
+    return toarray()
+           ^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/jax/_src/array.py", line 439, in __array__
+    return np.asarray(self._value, dtype=dtype, **kwds)
+                      ^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/jax/_src/profiler.py", line 359, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/jax/_src/array.py", line 639, in _value
+    npy_value, did_copy = self._single_device_array_to_np_array_did_copy()
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

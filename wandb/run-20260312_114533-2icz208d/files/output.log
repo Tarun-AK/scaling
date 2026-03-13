@@ -1,0 +1,65 @@
+Sampling sequences:  95%|████████████████████████▋ | 19/20 [1:13:23<03:51, 231.76s/it]
+Traceback (most recent call last):
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 37, in <module>
+    main()
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/main.py", line 94, in decorated_main
+    _run_hydra(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 394, in _run_hydra
+    _run_app(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 465, in _run_app
+    run_and_report(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 220, in run_and_report
+    return func()
+           ^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 466, in <lambda>
+    lambda: hydra.multirun(
+            ^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/hydra.py", line 162, in multirun
+    ret = sweeper.sweep(arguments=task_overrides)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/core_plugins/basic_sweeper.py", line 177, in sweep
+    results = self.launcher.launch(batch, initial_job_idx=initial_job_idx)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/core_plugins/basic_launcher.py", line 74, in launch
+    ret = run_job(
+          ^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/home/tarunak/scaling/training/trainer.py", line 259, in train_and_evaluate
+  File "/home/tarunak/scaling/training/trainer.py", line 132, in sample_sequences
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/traceback_util.py", line 195, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 2244, in apply
+    return apply(
+           ^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/core/scope.py", line 1080, in wrapper
+    y = fn(root, *args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 3026, in scope_fn
+    return fn(module.clone(parent=scope, _deep_clone=True), *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 699, in wrapped_module_method
+    return self._call_wrapped_method(fun, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 1219, in _call_wrapped_method
+    y = run_fun(self, *args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/models/lstm.py", line 25, in __call__
+    x = nn.RNN(nn.LSTMCell(self.hidden_dim), name=f"rnn_{layer_idx}")(x)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 699, in wrapped_module_method
+    return self._call_wrapped_method(fun, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 1219, in _call_wrapped_method
+    y = run_fun(self, *args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/recurrent.py", line 1135, in __call__
+    scan_output = scan(self.cell, carry, inputs)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/transforms.py", line 433, in wrapped_fn
+    return trafo_fn(module_scopes, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

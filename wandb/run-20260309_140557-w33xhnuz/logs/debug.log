@@ -1,0 +1,5 @@
+2026-03-09 14:05:57,262 INFO    MainThread:584592 [wandb_init.py:setup_run_log_directory():717] Logging user logs to /home/tarunak/scaling/wandb/run-20260309_140557-w33xhnuz/logs/debug.log
+2026-03-09 14:05:57,268 INFO    MainThread:584592 [wandb_init.py:setup_run_log_directory():718] Logging internal logs to /home/tarunak/scaling/wandb/run-20260309_140557-w33xhnuz/logs/debug-internal.log
+2026-03-09 14:05:57,269 INFO    MainThread:584592 [wandb_init.py:init():844] calling init triggers
+2026-03-09 14:05:57,270 INFO    MainThread:584592 [wandb_init.py:init():849] wandb.init called with sweep_config: {}
+config: {'hidden_dim': 1028, 'num_layers': 1, 'seq_len': 512, 'batch_size': 64, 'learning_rate': 0.001, 'num_epochs': 10, 'run_name': 'lstm_hd1028', 'dataset_name': 'wikitext', 'dataset_config': 'wikitext-103-raw-v1', 'vocab_size': 8192, 'log_every_n_steps': 50, 'checkpoint_dir': '/home/tarunak/scaling/checkpoints/', 'results_dir': '/home/tarunak/scaling/results/', 'entropy_num_samples': 10000, 'entropy_sample_batch_size': 4096, 'entropy_every_n_epochs': 1, 'wandb_project': 'scaling', 'wandb_entity': None, 'wandb_group': None, '_wandb': {}}

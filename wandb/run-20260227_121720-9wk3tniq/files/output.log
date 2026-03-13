@@ -1,0 +1,14 @@
+[2026-02-27 12:41:56,404][absl][INFO] - save_device_host_concurrent_bytes=None
+[2026-02-27 12:41:56,405][absl][INFO] - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0xf32df89cbe00>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[2026-02-27 12:41:56,406][absl][INFO] - [process=0] Started saving checkpoint to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.
+Error executing job with overrides: ['hidden_dim=128']
+Traceback (most recent call last):
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/home/tarunak/scaling/training/trainer.py", line 208, in train_and_evaluate
+    checkpointer.save(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/orbax/checkpoint/_src/checkpointers/checkpointer.py", line 254, in save
+    raise ValueError(f'Destination {directory} already exists.')
+ValueError: Destination /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt already exists.
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.

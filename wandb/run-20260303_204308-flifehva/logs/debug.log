@@ -1,0 +1,5 @@
+2026-03-03 20:43:08,327 INFO    MainThread:97226 [wandb_init.py:setup_run_log_directory():717] Logging user logs to /home/tarunak/scaling/wandb/run-20260303_204308-flifehva/logs/debug.log
+2026-03-03 20:43:08,335 INFO    MainThread:97226 [wandb_init.py:setup_run_log_directory():718] Logging internal logs to /home/tarunak/scaling/wandb/run-20260303_204308-flifehva/logs/debug-internal.log
+2026-03-03 20:43:08,336 INFO    MainThread:97226 [wandb_init.py:init():844] calling init triggers
+2026-03-03 20:43:08,336 INFO    MainThread:97226 [wandb_init.py:init():849] wandb.init called with sweep_config: {}
+config: {'hidden_dim': 512, 'num_layers': 1, 'seq_len': 512, 'batch_size': 64, 'learning_rate': 0.001, 'num_epochs': 10, 'run_name': 'lstm_hd512', 'dataset_name': 'wikitext', 'dataset_config': 'wikitext-103-raw-v1', 'vocab_size': 8192, 'log_every_n_steps': 50, 'checkpoint_dir': '/home/tarunak/scaling/checkpoints/', 'results_dir': '/home/tarunak/scaling/results/', 'wandb_project': 'scaling', 'wandb_entity': None, 'wandb_group': None, '_wandb': {}}

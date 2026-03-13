@@ -1,0 +1,46 @@
+[2026-03-12 17:21:40,515][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:40,575][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:40,611][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/Salesforce/wikitext/b08601e04326c79dfdd32d625aee71d232d685c3/README.md "HTTP/1.1 200 OK"
+[2026-03-12 17:21:40,675][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:40,724][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 404 Not Found"
+[2026-03-12 17:21:40,916][httpx][INFO] - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/wikitext/wikitext.py "HTTP/1.1 200 OK"
+[2026-03-12 17:21:40,981][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/wikitext/revision/b08601e04326c79dfdd32d625aee71d232d685c3 "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:41,025][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/revision/b08601e04326c79dfdd32d625aee71d232d685c3 "HTTP/1.1 200 OK"
+[2026-03-12 17:21:41,073][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:41,120][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 404 Not Found"
+[2026-03-12 17:21:41,309][httpx][INFO] - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=wikitext "HTTP/1.1 404 Not Found"
+[2026-03-12 17:21:41,371][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-raw-v1?recursive=true&expand=false "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:41,424][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-raw-v1?recursive=true&expand=false "HTTP/1.1 200 OK"
+[2026-03-12 17:21:41,473][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:41,552][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3?recursive=false&expand=false "HTTP/1.1 200 OK"
+[2026-03-12 17:21:41,633][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 17:21:41,679][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 404 Not Found"
+[2026-03-12 17:22:31,870][jax._src.xla_bridge][INFO] - Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+[2026-03-12 21:35:32,105][absl][INFO] - orbax-checkpoint version: 0.11.33
+[2026-03-12 21:35:32,105][absl][INFO] - save_device_host_concurrent_bytes=None
+[2026-03-12 21:35:32,105][absl][INFO] - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0xf4cc79d4b500>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[2026-03-12 21:35:32,105][absl][INFO] - [thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+[2026-03-12 21:35:32,105][absl][INFO] - [process=0] Started saving checkpoint to /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.
+[2026-03-12 21:35:32,106][absl][INFO] - Specified `force`: removing existing directory.
+[2026-03-12 21:35:32,109][absl][INFO] - Creating tmp directory /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.orbax-checkpoint-tmp
+[2026-03-12 21:35:32,111][absl][INFO] - Wrote Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1773365732111002476, 'commit_timestamp_nsecs': None, 'custom_metadata': {}}, json={"item_handlers": null, "metrics": {}, "performance_metrics": {}, "init_timestamp_nsecs": 1773365732111002476, "commit_timestamp_nsecs": null, "custom_metadata": {}} to /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-03-12 21:35:32,116][absl][INFO] - Using ThreadSafeKeyValueSignalingClient
+[2026-03-12 21:35:32,123][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.007349s
+[2026-03-12 21:35:32,133][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.StringHandler".serialize. Time taken: 0.000303s
+[2026-03-12 21:35:32,134][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.000238s
+[2026-03-12 21:35:32,136][absl][INFO] - Scheduling D2H of 15 prioritized jax.Array.
+[2026-03-12 21:35:32,136][absl][INFO] - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[2026-03-12 21:35:32,154][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.018930s
+[2026-03-12 21:35:32,156][absl][INFO] - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 404.430 MiB/s (total gbytes: 18.0 MiB) (time elapsed: 0.04459500312805176 s) (per-host)
+[2026-03-12 21:35:32,157][absl][INFO] - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.044693s (batch_requests_ready=0.002775s, total_serialization_initiated=0.041421s, others=0.000497s)
+[2026-03-12 21:35:32,157][absl][INFO] - [process=0][thread=MainThread][operation_id=1] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[2026-03-12 21:35:32,158][absl][INFO] - [process=0][thread=array_type_handler] Wrote 15 array_metadata.ArrayMetadata to /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.orbax-checkpoint-tmp/array_metadatas/process_0
+[2026-03-12 21:35:32,219][absl][INFO] - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.062082s (commit=0.059714s, array_metadata_write=0.002368s)
+[2026-03-12 21:35:32,220][absl][INFO] - [process=0] /jax/checkpoint/write/gbytes_per_sec: 166.758 MiB/s (total gbytes: 18.0 MiB) (time elapsed: 0.1081540584564209 s) (per-host)
+[2026-03-12 21:35:32,221][absl][INFO] - Read Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1773365732111002476, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} from /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-03-12 21:35:32,222][absl][INFO] - Updated Metadata={'item_handlers': 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler', 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1773365732111002476, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} to /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-03-12 21:35:32,223][absl][INFO] - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[2026-03-12 21:35:32,237][absl][INFO] - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.014966s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.orbax-checkpoint-tmp
+[2026-03-12 21:35:32,237][absl][INFO] - Renaming /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt.orbax-checkpoint-tmp to /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt
+[2026-03-12 21:35:32,239][absl][INFO] - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt`.
+[2026-03-12 21:35:32,239][absl][INFO] - Finished synchronous save in 0.13 seconds to /home/tarunak/scaling/checkpoints/hidden_dim=256/ckpt

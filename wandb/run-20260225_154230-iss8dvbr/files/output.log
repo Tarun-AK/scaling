@@ -1,0 +1,28 @@
+Error executing job with overrides: ['hidden_dim=128']
+Traceback (most recent call last):
+  File "/Users/tarun/phd/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/Users/tarun/phd/scaling/training/trainer.py", line 197, in train_and_evaluate
+    state, metrics = train_step(state, batch)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+jax.errors.UnexpectedTracerError: Encountered an unexpected tracer. A function transformed by JAX had a side effect, allowing for a reference to an intermediate value with type float32[128] wrapped in a DynamicJaxprTracer to escape the scope of the transformation.
+JAX transformations require that functions explicitly return their outputs, and disallow saving intermediate values to global state.
+The function being traced when the value leaked was cell_step at /Users/tarun/phd/scaling/models/lstm.py:76 traced for scan.
+------------------------------
+The leaked intermediate value was created on line /Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/flax/linen/linear.py:270:13 (Dense.__call__).
+------------------------------
+When the value was created, the final 5 stack frames (most recent last) excluding JAX-internal frames were:
+------------------------------
+/Users/tarun/phd/scaling/training/trainer.py:55:13 (create_train_state)
+/Users/tarun/phd/scaling/models/lstm.py:80:25 (LSTMLanguageModel.__call__)
+/Users/tarun/phd/scaling/models/lstm.py:77:31 (LSTMLanguageModel.__call__.<locals>.cell_step)
+/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/flax/linen/recurrent.py:168:50 (LSTMCell.__call__)
+/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/flax/linen/linear.py:270:13 (Dense.__call__)
+------------------------------
+
+To catch the leak earlier, try setting the environment variable JAX_CHECK_TRACER_LEAKS or using the `jax.checking_leaks` context manager.
+See https://docs.jax.dev/en/latest/errors.html#jax.errors.UnexpectedTracerError
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.

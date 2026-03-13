@@ -1,0 +1,92 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            63w885e79ahoq7c44bb1oxdafe6cutte:
+                args:
+                    - --multirun
+                    - --config-name=sweep_hidden_dim
+                codePath: experiments/scaling_hidden_dim.py
+                codePathLocal: experiments/scaling_hidden_dim.py
+                cpu_count: 20
+                cpu_count_logical: 20
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "4031871553536"
+                        used: "57957498880"
+                email: tarunadvaith@gmail.com
+                executable: /home/tarunak/scaling/.venv/bin/python
+                gpu: NVIDIA GB10
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Blackwell
+                      cudaCores: 6144
+                      name: NVIDIA GB10
+                      uuid: GPU-9b9b0c92-6a74-93ba-cc2f-b1c30c82e44b
+                host: spark-5023
+                memory:
+                    total: "130663657472"
+                os: Linux-6.17.0-1008-nvidia-aarch64-with-glibc2.39
+                program: /home/tarunak/scaling/experiments/scaling_hidden_dim.py
+                python: CPython 3.12.3
+                root: /home/tarunak/scaling
+                startedAt: "2026-02-27T17:17:20.097201Z"
+                writerId: 63w885e79ahoq7c44bb1oxdafe6cutte
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 12
+                - 45
+                - 49
+                - 50
+                - 51
+            "2":
+                - 12
+                - 45
+                - 49
+                - 50
+                - 51
+            "3":
+                - 13
+                - 16
+                - 61
+            "4": 3.12.3
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-aarch64
+batch_size:
+    value: 64
+checkpoint_dir:
+    value: /home/tarunak/scaling/checkpoints/
+dataset_config:
+    value: wikitext-103-raw-v1
+dataset_name:
+    value: wikitext
+hidden_dim:
+    value: 128
+learning_rate:
+    value: 0.001
+log_every_n_steps:
+    value: 50
+num_epochs:
+    value: 10
+num_layers:
+    value: 1
+num_params:
+    value: 2236928
+results_dir:
+    value: /home/tarunak/scaling/results/
+run_name:
+    value: lstm_hd128
+seq_len:
+    value: 128
+vocab_size:
+    value: 8192
+wandb_entity:
+    value: null
+wandb_group:
+    value: null
+wandb_project:
+    value: scaling

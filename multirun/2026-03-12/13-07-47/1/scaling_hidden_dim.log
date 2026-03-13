@@ -1,0 +1,69 @@
+[2026-03-12 16:38:40,159][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 16:38:40,208][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 16:38:40,228][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/Salesforce/wikitext/b08601e04326c79dfdd32d625aee71d232d685c3/README.md "HTTP/1.1 200 OK"
+[2026-03-12 16:38:40,335][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 16:38:40,429][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 404 Not Found"
+[2026-03-12 16:38:40,720][httpx][INFO] - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/wikitext/wikitext.py "HTTP/1.1 200 OK"
+[2026-03-12 16:38:40,808][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 16:38:40,919][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 404 Not Found"
+[2026-03-12 16:38:41,706][httpx][INFO] - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=wikitext "HTTP/1.1 404 Not Found"
+[2026-03-12 16:38:41,760][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 307 Temporary Redirect"
+[2026-03-12 16:38:41,819][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 404 Not Found"
+[2026-03-12 17:21:06,614][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,616][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,616][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,616][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,617][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,618][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,619][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,619][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,619][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,620][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,620][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,620][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,620][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,621][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,621][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,621][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,621][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,621][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,621][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,622][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,622][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,622][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.
+[2026-03-12 17:21:06,627][asyncio][WARNING] - socket.send() raised exception.

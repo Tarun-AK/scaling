@@ -1,0 +1,48 @@
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:30<00:00, 37.54s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:13<00:00,  1.43it/s]
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:26<00:00, 37.34s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:09<00:00,  2.04it/s]
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:22<00:00, 37.12s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:09<00:00,  2.09it/s]
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:20<00:00, 37.05s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:09<00:00,  2.05it/s]
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:22<00:00, 37.14s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:09<00:00,  2.06it/s]
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:21<00:00, 37.07s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:09<00:00,  2.06it/s]
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:22<00:00, 37.11s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:09<00:00,  2.09it/s]
+Sampling sequences: 100%|█████████████████████████████| 20/20 [12:22<00:00, 37.15s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:09<00:00,  2.11it/s]
+Sampling sequences: 100%|█| 20/20 [12:16<00:00, 36.84s/i
+Computing entropy: 100%|█| 19/19 [00:09<00:00,  2.06it/s
+Sampling sequences: 100%|█| 20/20 [12:25<00:00, 37.25s/i
+Computing entropy: 100%|█| 19/19 [00:09<00:00,  2.02it/s
+[2026-03-12 16:38:38,043][absl][INFO] - orbax-checkpoint version: 0.11.33
+[2026-03-12 16:38:38,043][absl][INFO] - save_device_host_concurrent_bytes=None
+[2026-03-12 16:38:38,053][absl][INFO] - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0xeead93e05eb0>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[2026-03-12 16:38:38,053][absl][INFO] - [thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+[2026-03-12 16:38:38,053][absl][INFO] - [process=0] Started saving checkpoint to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.
+[2026-03-12 16:38:38,054][absl][INFO] - Specified `force`: removing existing directory.
+[2026-03-12 16:38:38,056][absl][INFO] - Creating tmp directory /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp
+[2026-03-12 16:38:38,056][absl][INFO] - Wrote Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1773347918056617800, 'commit_timestamp_nsecs': None, 'custom_metadata': {}}, json={"item_handlers": null, "metrics": {}, "performance_metrics": {}, "init_timestamp_nsecs": 1773347918056617800, "commit_timestamp_nsecs": null, "custom_metadata": {}} to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-03-12 16:38:38,061][absl][INFO] - Using ThreadSafeKeyValueSignalingClient
+[2026-03-12 16:38:38,062][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.000683s
+[2026-03-12 16:38:38,079][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.StringHandler".serialize. Time taken: 0.000980s
+[2026-03-12 16:38:38,081][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.000400s
+[2026-03-12 16:38:38,082][absl][INFO] - Scheduling D2H of 15 prioritized jax.Array.
+[2026-03-12 16:38:38,082][absl][INFO] - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[2026-03-12 16:38:38,094][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.012576s
+[2026-03-12 16:38:38,097][absl][INFO] - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 213.824 MiB/s (total gbytes: 8.5 MiB) (time elapsed: 0.03990936279296875 s) (per-host)
+[2026-03-12 16:38:38,098][absl][INFO] - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.040527s (batch_requests_ready=0.002824s, total_serialization_initiated=0.036735s, others=0.000968s)
+[2026-03-12 16:38:38,099][absl][INFO] - [process=0][thread=MainThread][operation_id=1] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[2026-03-12 16:38:38,100][absl][INFO] - [process=0][thread=array_type_handler] Wrote 15 array_metadata.ArrayMetadata to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/array_metadatas/process_0
+[2026-03-12 16:38:38,162][absl][INFO] - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.063729s (commit=0.062828s, array_metadata_write=0.000901s)
+[2026-03-12 16:38:38,163][absl][INFO] - [process=0] /jax/checkpoint/write/gbytes_per_sec: 80.986 MiB/s (total gbytes: 8.5 MiB) (time elapsed: 0.10537147521972656 s) (per-host)
+[2026-03-12 16:38:38,164][absl][INFO] - Read Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1773347918056617800, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} from /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-03-12 16:38:38,164][absl][INFO] - Updated Metadata={'item_handlers': 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler', 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1773347918056617800, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-03-12 16:38:38,166][absl][INFO] - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[2026-03-12 16:38:38,183][absl][INFO] - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.017900s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp
+[2026-03-12 16:38:38,183][absl][INFO] - Renaming /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt
+[2026-03-12 16:38:38,184][absl][INFO] - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt`.
+[2026-03-12 16:38:38,185][absl][INFO] - Finished synchronous save in 0.13 seconds to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt

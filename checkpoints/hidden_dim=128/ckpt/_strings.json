@@ -1,0 +1,1 @@
+{"config.checkpoint_dir":"/home/tarunak/scaling/checkpoints/","config.dataset_config":"wikitext-103-raw-v1","config.dataset_name":"wikitext","config.results_dir":"/home/tarunak/scaling/results/","config.run_name":"lstm_hd128","config.wandb_project":"scaling"}

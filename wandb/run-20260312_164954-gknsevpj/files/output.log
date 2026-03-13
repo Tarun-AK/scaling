@@ -1,0 +1,36 @@
+Sampling sequences: 100%|█████████████████████████████| 20/20 [15:46<00:00, 47.34s/it]
+Computing entropy: 100%|██████████████████████████████| 19/19 [00:15<00:00,  1.23it/s]
+Traceback (most recent call last):
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 37, in <module>
+    main()
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/main.py", line 94, in decorated_main
+    _run_hydra(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 394, in _run_hydra
+    _run_app(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 465, in _run_app
+    run_and_report(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 220, in run_and_report
+    return func()
+           ^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 466, in <lambda>
+    lambda: hydra.multirun(
+            ^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/hydra.py", line 162, in multirun
+    ret = sweeper.sweep(arguments=task_overrides)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/core_plugins/basic_sweeper.py", line 177, in sweep
+    results = self.launcher.launch(batch, initial_job_idx=initial_job_idx)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/core_plugins/basic_launcher.py", line 74, in launch
+    ret = run_job(
+          ^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/home/tarunak/scaling/training/trainer.py", line 274, in train_and_evaluate
+    state, metrics = train_step(state, batch)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 1, in <lambda>
+KeyboardInterrupt

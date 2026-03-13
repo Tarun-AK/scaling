@@ -1,0 +1,116 @@
+Traceback (most recent call last):
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 37, in <module>
+    main()
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/main.py", line 94, in decorated_main
+    _run_hydra(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 394, in _run_hydra
+    _run_app(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 465, in _run_app
+    run_and_report(
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 220, in run_and_report
+    return func()
+           ^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/utils.py", line 466, in <lambda>
+    lambda: hydra.multirun(
+            ^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/hydra.py", line 162, in multirun
+    ret = sweeper.sweep(arguments=task_overrides)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/core_plugins/basic_sweeper.py", line 177, in sweep
+    results = self.launcher.launch(batch, initial_job_idx=initial_job_idx)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/core_plugins/basic_launcher.py", line 74, in launch
+    ret = run_job(
+          ^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/home/tarunak/scaling/training/trainer.py", line 241, in train_and_evaluate
+  File "/home/tarunak/scaling/training/trainer.py", line 130, in sample_sequences
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/traceback_util.py", line 195, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 2244, in apply
+    return apply(
+           ^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/core/scope.py", line 1080, in wrapper
+    y = fn(root, *args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 3026, in scope_fn
+    return fn(module.clone(parent=scope, _deep_clone=True), *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 699, in wrapped_module_method
+    return self._call_wrapped_method(fun, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 1219, in _call_wrapped_method
+    y = run_fun(self, *args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/models/lstm.py", line 28, in __call__
+    logits = nn.Dense(features=self.vocab_size, name="lm_head")(x)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 699, in wrapped_module_method
+    return self._call_wrapped_method(fun, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/module.py", line 1219, in _call_wrapped_method
+    y = run_fun(self, *args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/flax/linen/linear.py", line 287, in __call__
+    y = dot_general(
+        ^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/lax/lax.py", line 2409, in dot_general
+    return dot(lhs, rhs, dimension_numbers=dimension_numbers, precision=precision,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/lax/lax.py", line 2501, in dot
+    return dot_general_p.bind(lhs, rhs,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/core.py", line 632, in bind
+    return self._true_bind(*args, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/core.py", line 648, in _true_bind
+    return self.bind_with_trace(prev_trace, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/core.py", line 660, in bind_with_trace
+    return trace.process_primitive(self, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/core.py", line 1205, in process_primitive
+    return primitive.impl(*args, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/dispatch.py", line 91, in apply_primitive
+    outs = fun(*args)
+           ^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/traceback_util.py", line 195, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/pjit.py", line 259, in cache_miss
+    executable, pgle_profiler, const_args) = _run_python_pjit(
+                                             ^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/pjit.py", line 142, in _run_python_pjit
+    out_flat, compiled, profiler, const_args = _pjit_call_impl_python(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/pjit.py", line 1202, in _pjit_call_impl_python
+    compiled = computation.compile()
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/interpreters/pxla.py", line 2510, in compile
+    executable = UnloadedMeshExecutable.from_hlo(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/interpreters/pxla.py", line 3056, in from_hlo
+    xla_executable = _cached_compilation(
+                     ^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/interpreters/pxla.py", line 2837, in _cached_compilation
+    xla_executable = compiler.compile_or_get_cached(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/compiler.py", line 478, in compile_or_get_cached
+    return _compile_and_write_cache(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/compiler.py", line 746, in _compile_and_write_cache
+    executable = backend_compile_and_load(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/profiler.py", line 359, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tarunak/scaling/.venv/lib/python3.12/site-packages/jax/_src/compiler.py", line 362, in backend_compile_and_load
+    return backend.compile_and_load(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

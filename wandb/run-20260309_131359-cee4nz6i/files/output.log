@@ -1,0 +1,25 @@
+[2026-03-09 13:37:47,792][HYDRA] 	#1 : hidden_dim=256
+/home/tarunak/scaling/.venv/lib/python3.12/site-packages/hydra/_internal/defaults_list.py:251: UserWarning: In 'sweep_hidden_dim': Defaults list is missing `_self_`. See https://hydra.cc/docs/1.2/upgrades/1.0_to_1.1/default_composition_order for more information
+  warnings.warn(msg, UserWarning)
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-09 13:37:47,853][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-09 13:37:47,855][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[34m[1mwandb[0m: wandb.init() called while a run is active and reinit is set to 'default', so returning the previous run.
+[2026-03-09 13:47:37,864][HYDRA] 	#2 : hidden_dim=512
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-09 13:47:38,063][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-09 13:47:38,082][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[34m[1mwandb[0m: wandb.init() called while a run is active and reinit is set to 'default', so returning the previous run.
+[2026-03-09 13:57:42,557][HYDRA] 	#3 : hidden_dim=1028
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-09 13:57:42,848][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-09 13:57:42,875][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[34m[1mwandb[0m: wandb.init() called while a run is active and reinit is set to 'default', so returning the previous run.
+[2026-03-09 14:05:57,409][HYDRA] 	#4 : hidden_dim=2048
+Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+[2026-03-09 14:05:57,638][datasets.load][WARNING] - Using the latest cached version of the dataset since wikitext couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).
+[2026-03-09 14:05:57,661][datasets.packaged_modules.cache.cache][WARNING] - Found the latest cached dataset configuration 'wikitext-103-raw-v1' at /home/tarunak/.cache/huggingface/datasets/wikitext/wikitext-103-raw-v1/0.0.0/b08601e04326c79dfdd32d625aee71d232d685c3 (last modified on Thu Feb 26 21:25:17 2026).

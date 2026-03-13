@@ -1,0 +1,28 @@
+Traceback (most recent call last):
+  File "/Users/tarun/phd/scaling/experiments/scaling_hidden_dim.py", line 37, in <module>
+    main()
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/main.py", line 94, in decorated_main
+    _run_hydra(
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 394, in _run_hydra
+    _run_app(
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 457, in _run_app
+    run_and_report(
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 220, in run_and_report
+    return func()
+           ^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/utils.py", line 458, in <lambda>
+    lambda: hydra.run(
+            ^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/_internal/hydra.py", line 119, in run
+    ret = run_job(
+          ^^^^^^^^
+  File "/Users/tarun/phd/scaling/.venv/lib/python3.11/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/tarun/phd/scaling/experiments/scaling_hidden_dim.py", line 33, in main
+    train_and_evaluate(config)
+  File "/Users/tarun/phd/scaling/training/trainer.py", line 197, in train_and_evaluate
+    state, metrics = train_step(state, batch)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 1, in <lambda>
+KeyboardInterrupt

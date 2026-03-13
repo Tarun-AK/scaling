@@ -1,0 +1,75 @@
+[2026-02-26 15:29:20,158][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:20,197][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:20,208][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/Salesforce/wikitext/b08601e04326c79dfdd32d625aee71d232d685c3/README.md "HTTP/1.1 200 OK"
+[2026-02-26 15:29:20,226][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/resolve-cache/datasets/Salesforce/wikitext/b08601e04326c79dfdd32d625aee71d232d685c3/README.md "HTTP/1.1 200 OK"
+[2026-02-26 15:29:20,280][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:20,346][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext.py "HTTP/1.1 404 Not Found"
+[2026-02-26 15:29:20,346][huggingface_hub.utils._http][WARNING] - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[2026-02-26 15:29:20,542][httpx][INFO] - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/wikitext/wikitext.py "HTTP/1.1 200 OK"
+[2026-02-26 15:29:20,591][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/wikitext/revision/b08601e04326c79dfdd32d625aee71d232d685c3 "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:20,637][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/revision/b08601e04326c79dfdd32d625aee71d232d685c3 "HTTP/1.1 200 OK"
+[2026-02-26 15:29:20,678][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:20,719][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/.huggingface.yaml "HTTP/1.1 404 Not Found"
+[2026-02-26 15:29:20,894][httpx][INFO] - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=wikitext "HTTP/1.1 404 Not Found"
+[2026-02-26 15:29:20,936][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-raw-v1?recursive=true&expand=false "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:20,979][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-raw-v1?recursive=true&expand=false "HTTP/1.1 200 OK"
+[2026-02-26 15:29:21,022][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:21,064][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3?recursive=false&expand=false "HTTP/1.1 200 OK"
+[2026-02-26 15:29:21,104][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:21,144][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/dataset_infos.json "HTTP/1.1 404 Not Found"
+[2026-02-26 15:29:21,185][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1?recursive=true&expand=false "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:21,228][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/tree/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1?recursive=true&expand=false "HTTP/1.1 200 OK"
+[2026-02-26 15:29:21,449][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/test-00000-of-00001.parquet "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:21,492][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/test-00000-of-00001.parquet "HTTP/1.1 302 Found"
+[2026-02-26 15:29:21,534][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/datasets/Salesforce/wikitext/xet-read-token/b08601e04326c79dfdd32d625aee71d232d685c3 "HTTP/1.1 200 OK"
+[2026-02-26 15:29:22,369][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/train-00000-of-00002.parquet "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:22,413][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/train-00000-of-00002.parquet "HTTP/1.1 302 Found"
+[2026-02-26 15:29:46,411][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/train-00001-of-00002.parquet "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:29:46,458][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/train-00001-of-00002.parquet "HTTP/1.1 302 Found"
+[2026-02-26 15:30:08,330][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/validation-00000-of-00001.parquet "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:30:08,404][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-103-v1/validation-00000-of-00001.parquet "HTTP/1.1 302 Found"
+[2026-02-26 15:30:10,135][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/config.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:10,182][httpx][INFO] - HTTP Request: GET https://huggingface.co/gpt2/resolve/main/config.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:10,230][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/tokenizer_config.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:10,274][httpx][INFO] - HTTP Request: GET https://huggingface.co/gpt2/resolve/main/tokenizer_config.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:10,318][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/models/gpt2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:30:10,365][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/models/openai-community/gpt2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+[2026-02-26 15:30:10,413][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/models/gpt2/tree/main?recursive=true&expand=false "HTTP/1.1 307 Temporary Redirect"
+[2026-02-26 15:30:10,475][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/models/openai-community/gpt2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+[2026-02-26 15:30:10,527][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/vocab.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:10,580][httpx][INFO] - HTTP Request: GET https://huggingface.co/gpt2/resolve/main/vocab.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:10,979][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/merges.txt "HTTP/1.1 200 OK"
+[2026-02-26 15:30:11,046][httpx][INFO] - HTTP Request: GET https://huggingface.co/gpt2/resolve/main/merges.txt "HTTP/1.1 200 OK"
+[2026-02-26 15:30:11,234][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/added_tokens.json "HTTP/1.1 404 Not Found"
+[2026-02-26 15:30:11,285][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/special_tokens_map.json "HTTP/1.1 404 Not Found"
+[2026-02-26 15:30:11,348][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/tokenizer.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:11,428][httpx][INFO] - HTTP Request: GET https://huggingface.co/gpt2/resolve/main/tokenizer.json "HTTP/1.1 200 OK"
+[2026-02-26 15:30:12,161][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/gpt2/resolve/main/chat_template.jinja "HTTP/1.1 404 Not Found"
+[2026-02-26 15:31:02,111][jax._src.xla_bridge][INFO] - Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+[2026-02-26 20:13:25,922][absl][INFO] - orbax-checkpoint version: 0.11.33
+[2026-02-26 20:13:25,923][absl][INFO] - save_device_host_concurrent_bytes=None
+[2026-02-26 20:13:25,923][absl][INFO] - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0xebae5e57b020>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[2026-02-26 20:13:25,924][absl][INFO] - [thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+[2026-02-26 20:13:25,924][absl][INFO] - [process=0] Started saving checkpoint to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.
+[2026-02-26 20:13:25,925][absl][INFO] - Creating tmp directory /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp
+[2026-02-26 20:13:25,926][absl][INFO] - Wrote Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1772154805926497195, 'commit_timestamp_nsecs': None, 'custom_metadata': {}}, json={"item_handlers": null, "metrics": {}, "performance_metrics": {}, "init_timestamp_nsecs": 1772154805926497195, "commit_timestamp_nsecs": null, "custom_metadata": {}} to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-02-26 20:13:25,929][absl][INFO] - Using ThreadSafeKeyValueSignalingClient
+[2026-02-26 20:13:25,932][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.002867s
+[2026-02-26 20:13:25,933][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.StringHandler".serialize. Time taken: 0.000195s
+[2026-02-26 20:13:25,933][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.type_handlers.ScalarHandler".serialize. Time taken: 0.000245s
+[2026-02-26 20:13:25,934][absl][INFO] - Scheduling D2H of 27 prioritized jax.Array.
+[2026-02-26 20:13:25,934][absl][INFO] - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[2026-02-26 20:13:25,961][absl][INFO] - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.027894s
+[2026-02-26 20:13:25,964][absl][INFO] - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 1.348 GiB/s (total gbytes: 50.3 MiB) (time elapsed: 0.03643155097961426 s) (per-host)
+[2026-02-26 20:13:25,964][absl][INFO] - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.036687s (batch_requests_ready=0.001477s, total_serialization_initiated=0.034531s, others=0.000679s)
+[2026-02-26 20:13:25,964][absl][INFO] - [process=0][thread=MainThread][operation_id=1] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[2026-02-26 20:13:25,966][absl][INFO] - [process=0][thread=array_type_handler] Wrote 27 array_metadata.ArrayMetadata to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/array_metadatas/process_0
+[2026-02-26 20:13:26,065][absl][INFO] - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.100500s (commit=0.097625s, array_metadata_write=0.002875s)
+[2026-02-26 20:13:26,066][absl][INFO] - [process=0] /jax/checkpoint/write/gbytes_per_sec: 362.349 MiB/s (total gbytes: 50.3 MiB) (time elapsed: 0.1387476921081543 s) (per-host)
+[2026-02-26 20:13:26,067][absl][INFO] - Read Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1772154805926497195, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} from /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-02-26 20:13:26,067][absl][INFO] - Updated Metadata={'item_handlers': 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler', 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1772154805926497195, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[2026-02-26 20:13:26,069][absl][INFO] - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[2026-02-26 20:13:26,082][absl][INFO] - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.014728s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp
+[2026-02-26 20:13:26,083][absl][INFO] - Renaming /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt.orbax-checkpoint-tmp to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt
+[2026-02-26 20:13:26,084][absl][INFO] - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt`.
+[2026-02-26 20:13:26,085][absl][INFO] - Finished synchronous save in 0.16 seconds to /home/tarunak/scaling/checkpoints/hidden_dim=128/ckpt

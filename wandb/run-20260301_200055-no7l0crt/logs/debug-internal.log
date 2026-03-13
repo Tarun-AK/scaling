@@ -1,0 +1,25 @@
+{"time":"2026-03-01T20:00:55.758423525-05:00","level":"INFO","msg":"stream: starting","core version":"0.25.0"}
+{"time":"2026-03-01T20:00:55.974460111-05:00","level":"INFO","msg":"stream: created new stream","id":"no7l0crt"}
+{"time":"2026-03-01T20:00:55.974896171-05:00","level":"INFO","msg":"handler: started","stream_id":"no7l0crt"}
+{"time":"2026-03-01T20:00:55.976319537-05:00","level":"INFO","msg":"stream: started","id":"no7l0crt"}
+{"time":"2026-03-01T20:00:55.976723166-05:00","level":"INFO","msg":"sender: started","stream_id":"no7l0crt"}
+{"time":"2026-03-01T20:00:55.976453856-05:00","level":"INFO","msg":"writer: started","stream_id":"no7l0crt"}
+{"time":"2026-03-02T01:59:16.977338535-05:00","level":"INFO","msg":"api: retrying HTTP error","status":408,"url":"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>408 Request Timeout</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Request Timeout</h1>\n<h2>Your client has taken too long to issue its request.</h2>\n<h2></h2>\n</body></html>\n"}
+{"time":"2026-03-02T02:02:19.356884529-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": context deadline exceeded"}
+{"time":"2026-03-02T02:05:23.788635216-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2026-03-02T02:08:32.777356789-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2026-03-02T02:11:52.277436372-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2026-03-02T02:15:22.425511686-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": read tcp 10.10.60.126:40270->35.186.228.49:443: read: connection timed out"}
+{"time":"2026-03-02T02:16:41.657826784-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": dial tcp: lookup api.wandb.ai on 127.0.0.53:53: read udp 127.0.0.1:41415->127.0.0.53:53: i/o timeout"}
+{"time":"2026-03-02T02:18:00.900176289-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": dial tcp: lookup api.wandb.ai on 127.0.0.53:53: read udp 127.0.0.1:43814->127.0.0.53:53: i/o timeout"}
+{"time":"2026-03-02T02:19:17.242585431-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": dial tcp: lookup api.wandb.ai on 127.0.0.53:53: read udp 127.0.0.1:39102->127.0.0.53:53: i/o timeout"}
+{"time":"2026-03-02T02:20:32.634171717-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": dial tcp: lookup api.wandb.ai on 127.0.0.53:53: server misbehaving"}
+{"time":"2026-03-02T02:21:47.898547464-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": dial tcp: lookup api.wandb.ai on 127.0.0.53:53: read udp 127.0.0.1:49004->127.0.0.53:53: i/o timeout"}
+{"time":"2026-03-02T02:23:03.290019388-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": dial tcp: lookup api.wandb.ai on 127.0.0.53:53: server misbehaving"}
+{"time":"2026-03-02T02:24:19.450058452-05:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/tarunadvaith-/scaling/no7l0crt/file_stream\": dial tcp: lookup api.wandb.ai on 127.0.0.53:53: read udp 127.0.0.1:57526->127.0.0.53:53: i/o timeout"}
+{"time":"2026-03-02T06:53:39.85315947-05:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-03-02T06:53:40.020089368-05:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-03-02T06:53:40.029157202-05:00","level":"INFO","msg":"stream: closing","id":"no7l0crt"}
+{"time":"2026-03-02T06:53:40.02939826-05:00","level":"INFO","msg":"handler: closed","stream_id":"no7l0crt"}
+{"time":"2026-03-02T06:53:40.0294341-05:00","level":"INFO","msg":"sender: closed","stream_id":"no7l0crt"}
+{"time":"2026-03-02T06:53:40.029439764-05:00","level":"INFO","msg":"stream: closed","id":"no7l0crt"}
