@@ -14,15 +14,15 @@ A JAX/Flax implementation of LSTM language models for studying scaling laws. Tra
 ## Setup
 
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate
+# Create and activate virtual environment using Astral's uv
+uv venv
 
-# Install dependencies
-pip install -e .
-pip install -r requirements.txt
+# Install dependencie
+uv pip install -e .
+uv pip install -r requirements.txt
 
 # Train the BPE tokenizer (required before first run)
+source .venv/bin/activate
 python data/train_tokenizer.py
 ```
 
