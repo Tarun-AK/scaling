@@ -1,4 +1,9 @@
 ./.venv/*
 ./.ruff_cache/
 ./scaling.egg-info/*
+**__pycache__**
+./checkpoints/*
+./multirun/*
+./wandb/*
+
 

@@ -8,12 +8,22 @@ num_epochs: 10
 run_name: ""
 dataset_name: "wikitext"
 dataset_config: "wikitext-103-raw-v1"
+dataset_path: null
+cache_dir: "data/cache"
+require_cached_data: true
 vocab_size: 8192
+bos_token_id: 0
+tokenizer_path: "data/tokenizer/tokenizer.json"
+tokenize_batch_size: 32
 log_every_n_steps: 50
+eval_every_n_steps: 200
+early_stop_patience: 5
+early_stop_min_delta: 0.0001
+log_train_ngram_after_training: false
 checkpoint_dir: "checkpoints/"
 results_dir: "results/"
 # Conditional entropy sampling
-entropy_num_samples: 10000
+entropy_num_samples: 100000
 entropy_sample_batch_size: 512
 entropy_every_n_epochs: 1
 # W&B

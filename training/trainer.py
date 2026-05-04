@@ -3,8 +3,7 @@
 Key features:
 - JIT-compiled train/eval steps.
 - Weights & Biases logging.
-- Fixed number of epochs (no early stopping).
-- Conditional entropy computed by sampling from p_theta at end of each epoch.
+- In-epoch test-loss monitoring with optional early stopping.
 - Orbax checkpointing keyed by hidden_dim.
 
 Notes on JAX gotchas:
@@ -51,13 +50,40 @@ def create_train_state(
     return TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
 
-@jax.jit
+def _prepend_bos(tokens: jax.Array, bos_token_id: int) -> jax.Array:
+    bos = jnp.full((tokens.shape[0], 1), bos_token_id, dtype=tokens.dtype)
+    return jnp.concatenate([bos, tokens[:, :-1]], axis=1)
+
+
+def _normalize_params_for_step(params: dict, num_layers: int) -> dict:
+    if any(k.startswith("rnn_") for k in params):
+        return params
+
+    lstm_keys = [k for k in params if k.startswith("LSTMCell_")]
+    if not lstm_keys:
+        return params
+
+    normalized = dict(params)
+    for layer_idx in range(num_layers):
+        cell_key = f"LSTMCell_{layer_idx}"
+        if cell_key not in params:
+            raise RuntimeError(
+                f"Missing {cell_key} in params for num_layers={num_layers}"
+            )
+        normalized.setdefault(f"rnn_{layer_idx}", {"cell": params[cell_key]})
+    return normalized
+
+
+@functools.partial(jax.jit, static_argnames=("bos_token_id",))
 def train_step(
-    state: TrainState, batch: jax.Array
-) -> Tuple[TrainState, Dict[str, jax.Array]]:
+    state: TrainState,
+    batch: jax.Array,
+    rng: jax.Array,
+    bos_token_id: int,
+) -> Tuple[TrainState, Dict[str, jax.Array], jax.Array]:
     """Perform a single optimization step."""
-    inputs = batch[:, :-1]
-    observed_next_tokens = batch[:, 1:]
+    inputs = _prepend_bos(batch, bos_token_id)
+    observed_next_tokens = batch
 
     def loss_fn(params):
         logits = state.apply_fn({"params": params}, inputs)
@@ -66,138 +92,156 @@ def train_step(
 
     (loss, _), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     new_state = state.apply_gradients(grads=grads)
-    return new_state, {"loss": loss}
+    return new_state, {"loss": loss}, rng
 
 
-@jax.jit
-def eval_step(state: TrainState, batch: jax.Array) -> Dict[str, jax.Array]:
+@functools.partial(jax.jit, static_argnames=("bos_token_id",))
+def eval_step(
+    state: TrainState,
+    batch: jax.Array,
+    bos_token_id: int,
+) -> Dict[str, jax.Array]:
     """Compute all n-gram losses for a batch."""
-    return compute_all_ngram_losses(state.apply_fn, state.params, batch)
+    return compute_all_ngram_losses(state.apply_fn, state.params, batch, bos_token_id)
+
+
+@functools.partial(jax.jit, static_argnames=("bos_token_id",))
+def eval_loss_step(
+    state: TrainState,
+    batch: jax.Array,
+    bos_token_id: int,
+) -> jax.Array:
+    inputs = _prepend_bos(batch, bos_token_id)
+    logits = state.apply_fn({"params": state.params}, inputs)
+    return cross_entropy_loss(logits, batch)
 
 
 def _mean_metrics(metrics_list: Iterable[Dict[str, jax.Array]]) -> Dict[str, float]:
     """Average a list of metric dicts into Python floats."""
-    stacked: Dict[str, list[jax.Array]] = {}
+    totals: Dict[str, float] = {}
+    count = 0
     for m in metrics_list:
+        count += 1
         for k, v in m.items():
-            stacked.setdefault(k, []).append(v)
-    return {
-        k: float(jax.device_get(jnp.mean(jnp.stack(vs)))) for k, vs in stacked.items()
-    }
+            totals[k] = totals.get(k, 0.0) + float(jax.device_get(v))
+    if count == 0:
+        return {}
+    return {k: v / count for k, v in totals.items()}
 
 
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def _wandb_init(config: Any) -> None:
-    import wandb
+def _config_to_dict(config: Any) -> dict:
+    if OmegaConf.is_config(config):
+        return OmegaConf.to_container(config, resolve=True)
+    try:
+        return dict(config)
+    except TypeError:
+        return vars(config)
 
-    cfg_dict = (
-        OmegaConf.to_container(config, resolve=True)
-        if OmegaConf.is_config(config)
-        else dict(config)
+
+def _eval_split(
+    state: TrainState, data: np.ndarray, batch_size: int, bos_token_id: int
+) -> Dict[str, float]:
+    return _mean_metrics(
+        eval_step(state, batch, bos_token_id)
+        for batch in batch_iterator(
+            data,
+            batch_size=batch_size,
+            shuffle=False,
+            seed=0,
+            drop_last=True,
+        )
     )
-    wandb.init(
-        project=str(getattr(config, "wandb_project", "scaling")),
-        entity=getattr(config, "wandb_entity", None),
-        group=getattr(config, "wandb_group", None),
-        name=getattr(config, "run_name", None),
-        config=cfg_dict,
-    )
 
 
-@functools.partial(
-    jax.jit, static_argnames=("apply_fn", "seq_len", "batch_size", "vocab_size")
-)
-def _sample_batch(
-    apply_fn,
-    params,
-    seq_len: int,
+def _eval_loss(
+    state: TrainState,
+    data: np.ndarray,
     batch_size: int,
-    vocab_size: int,
-    rng: jax.Array,
-) -> jax.Array:
-    """Sample a single batch of sequences autoregressively using lax.scan."""
-
-    def scan_step(carry, _):
-        tokens, rng = carry
-        logits = apply_fn({"params": params}, tokens)
-        next_logits = logits[:, -1, :]
-        rng, step_rng = jax.random.split(rng)
-        next_token = jax.random.categorical(step_rng, next_logits)
-        # Shift window left, append new token at end
-        tokens = jnp.concatenate([tokens[:, 1:], next_token[:, None]], axis=1)
-        return (tokens, rng), next_token
-
-    rng, init_rng = jax.random.split(rng)
-    # Fixed shape buffer: start with one random token, rest zeros
-    init_tokens = jnp.concatenate(
-        [
-            jax.random.randint(
-                init_rng, shape=(batch_size, 1), minval=0, maxval=vocab_size
-            ),
-            jnp.zeros((batch_size, seq_len - 1), dtype=jnp.int32),
-        ],
-        axis=1,
-    )
-
-    (_, _), sampled = jax.lax.scan(
-        scan_step, (init_tokens, rng), None, length=seq_len - 1
-    )
-
-    # sampled: (seq_len-1, batch_size) -> (batch_size, seq_len)
-    return jnp.concatenate(
-        [
-            init_tokens[:, :1],
-            jnp.transpose(sampled),
-        ],
-        axis=1,
-    )
+    bos_token_id: int,
+) -> float:
+    total = 0.0
+    count = 0
+    for batch in batch_iterator(
+        data,
+        batch_size=batch_size,
+        shuffle=False,
+        seed=0,
+        drop_last=True,
+    ):
+        total += float(jax.device_get(eval_loss_step(state, batch, bos_token_id)))
+        count += 1
+    if count == 0:
+        return float("inf")
+    return total / count
 
 
-def sample_sequences(
-    apply_fn,
-    params,
+def _sample_sequences(
+    model: LSTMLanguageModel,
+    params: dict,
     seq_len: int,
     num_samples: int,
     batch_size: int,
-    vocab_size: int,
+    bos_token_id: int,
     rng: jax.Array,
 ) -> np.ndarray:
-    """Sample sequences autoregressively from p_theta."""
+    def _sample_batch(
+        batch_rng: jax.Array, init_carry: tuple, seq_len: int, bos_token_id: int
+    ) -> jax.Array:
+        def scan_step(state, _):
+            lstm_carry, logits = model.apply(
+                {"params": params},
+                state["carry"],
+                state["token"],
+                method=model.step,
+            )
+            rng, step_rng = jax.random.split(state["rng"])
+            next_token = jax.random.categorical(step_rng, logits)
+            new_state = {"carry": lstm_carry, "token": next_token, "rng": rng}
+            return new_state, next_token
+
+        init_token = jnp.full((init_carry[0][0].shape[0],), bos_token_id)
+        carry = {"carry": init_carry, "token": init_token, "rng": batch_rng}
+        _, tokens = jax.lax.scan(scan_step, carry, jnp.arange(seq_len))
+        return jnp.transpose(tokens, (1, 0))
+
+    sample_batch_jit = jax.jit(
+        _sample_batch, static_argnames=("seq_len", "bos_token_id")
+    )
+
     all_samples = []
     num_batches = (num_samples + batch_size - 1) // batch_size
 
-    for _ in tqdm(range(num_batches), desc="Sampling sequences"):
+    for batch_idx in range(num_batches):
         rng, batch_rng = jax.random.split(rng)
-        batch_samples = _sample_batch(
-            apply_fn=apply_fn,
-            params=params,
-            seq_len=seq_len,
-            batch_size=batch_size,
-            vocab_size=vocab_size,
-            rng=batch_rng,
-        )
-        all_samples.append(np.array(batch_samples))
+        current_batch_size = min(batch_size, num_samples - batch_idx * batch_size)
+
+        init_carry = model.init_carry(current_batch_size)
+        tokens = sample_batch_jit(batch_rng, init_carry, seq_len, bos_token_id)
+        all_samples.append(np.array(tokens))
 
     return np.concatenate(all_samples, axis=0)[:num_samples]
 
 
-def compute_conditional_entropy(
+def _compute_conditional_entropy_from_samples(
     apply_fn,
     params,
     samples: np.ndarray,
     batch_size: int,
+    bos_token_id: int,
 ) -> Dict[str, float]:
-    """Compute per-position conditional entropy H_n(p_theta) from sampled sequences."""
     all_metrics = []
-    num_batches = len(samples) // batch_size
+    num_batches = (len(samples) + batch_size - 1) // batch_size
 
-    for i in tqdm(range(num_batches), desc="Computing entropy"):
-        batch = jnp.array(samples[i * batch_size : (i + 1) * batch_size])
-        inputs = batch[:, :-1]
-        targets = batch[:, 1:]
+    for i in range(num_batches):
+        start = i * batch_size
+        end = min(start + batch_size, len(samples))
+        batch = jnp.array(samples[start:end])
+        inputs = _prepend_bos(batch, bos_token_id)
+        targets = batch
 
         logits = apply_fn({"params": params}, inputs)
         log_probs = jax.nn.log_softmax(logits, axis=-1)
@@ -208,6 +252,9 @@ def compute_conditional_entropy(
         per_position = -jnp.mean(token_logp, axis=0)
         all_metrics.append(np.array(per_position))
 
+    if not all_metrics:
+        return {}
+
     mean_per_position = np.mean(np.stack(all_metrics), axis=0)
     return {
         f"entropy_{n + 1}": float(mean_per_position[n])
@@ -215,17 +262,187 @@ def compute_conditional_entropy(
     }
 
 
+def _checkpoint_metadata(config: Any, epoch: int | None) -> dict[str, int | str]:
+    metadata: dict[str, int | str] = {
+        "hidden_dim": int(config.hidden_dim),
+        "num_layers": int(config.num_layers),
+        "seq_len": int(config.seq_len),
+        "vocab_size": int(config.vocab_size),
+    }
+    if epoch is not None:
+        metadata["epoch"] = int(epoch)
+    return metadata
+
+
+def _save_checkpoint(
+    *,
+    state: TrainState,
+    config: Any,
+    checkpoint_root: str,
+    wandb_run_id: str,
+    epoch: int | None,
+) -> str:
+    _ensure_dir(checkpoint_root)
+    checkpointer = ocp.PyTreeCheckpointer()
+    checkpointer.save(
+        os.path.join(checkpoint_root, "ckpt"),
+        {
+            "params": state.params,
+            "config": _config_to_dict(config),
+            "wandb_run_id": wandb_run_id,
+            "epoch": epoch,
+        },
+        force=True,
+    )
+    return checkpoint_root
+
+
+def _log_checkpoint_artifact(
+    *,
+    config: Any,
+    checkpoint_root: str,
+    artifact_name: str,
+    wandb_run_id: str,
+    epoch: int | None,
+) -> None:
+    import wandb
+
+    metadata = {"wandb_run_id": wandb_run_id, **_checkpoint_metadata(config, epoch)}
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type="model",
+        metadata=metadata,
+    )
+    artifact.add_dir(checkpoint_root)
+    wandb.log_artifact(artifact)
+
+
+def _post_training_evals_and_checkpoint(
+    *,
+    state: TrainState,
+    model: LSTMLanguageModel,
+    config: Any,
+    rng: jax.Array,
+    train_np: np.ndarray,
+    val_np: np.ndarray,
+    test_np: np.ndarray,
+    global_step: int,
+    final_epoch: int,
+    early_stopped: bool,
+    best_test_loss: float | None,
+    best_test_step: int | None,
+) -> Dict[str, float]:
+    import wandb
+
+    bos_token_id = int(getattr(config, "bos_token_id", 0))
+
+    final_test_loss = _eval_loss(state, test_np, int(config.batch_size), bos_token_id)
+    wandb.log({"test/loss": final_test_loss}, step=global_step)
+
+    test_mean = _eval_split(state, test_np, int(config.batch_size), bos_token_id)
+    wandb.log({f"test/{k}": v for k, v in test_mean.items()}, step=global_step)
+
+    combined_np = np.concatenate([val_np, test_np], axis=0)
+    combined_mean = _eval_split(
+        state, combined_np, int(config.batch_size), bos_token_id
+    )
+    wandb.log({f"combined/{k}": v for k, v in combined_mean.items()})
+
+    if bool(getattr(config, "log_train_ngram_after_training", False)):
+        train_mean = _eval_split(state, train_np, int(config.batch_size), bos_token_id)
+        wandb.log({f"train_ngram/{k}": v for k, v in train_mean.items()})
+
+    entropy_num_samples = int(getattr(config, "entropy_num_samples", 0))
+    entropy_batch_size = int(getattr(config, "entropy_sample_batch_size", 0))
+    if entropy_num_samples > 0 and entropy_batch_size > 0:
+        rng, entropy_rng = jax.random.split(rng)
+        sample_params = _normalize_params_for_step(state.params, int(config.num_layers))
+        samples = _sample_sequences(
+            model=model,
+            params=sample_params,
+            seq_len=int(config.seq_len),
+            num_samples=entropy_num_samples,
+            batch_size=entropy_batch_size,
+            bos_token_id=bos_token_id,
+            rng=entropy_rng,
+        )
+        entropy_dict = _compute_conditional_entropy_from_samples(
+            apply_fn=state.apply_fn,
+            params=state.params,
+            samples=samples,
+            batch_size=entropy_batch_size,
+            bos_token_id=bos_token_id,
+        )
+        if entropy_dict:
+            wandb.log({f"conditional_entropy/{k}": v for k, v in entropy_dict.items()})
+
+    final_checkpoint_root = os.path.join(
+        str(config.checkpoint_dir), f"hidden_dim={int(config.hidden_dim)}"
+    )
+    _save_checkpoint(
+        state=state,
+        config=config,
+        checkpoint_root=final_checkpoint_root,
+        wandb_run_id=wandb.run.id,
+        epoch=final_epoch,
+    )
+    _log_checkpoint_artifact(
+        config=config,
+        checkpoint_root=final_checkpoint_root,
+        artifact_name=f"checkpoint-{wandb.run.id}",
+        wandb_run_id=wandb.run.id,
+        epoch=final_epoch,
+    )
+
+    summary_payload = {
+        "training/early_stopped": int(early_stopped),
+        "training/final_epoch": final_epoch,
+    }
+    if best_test_loss is not None:
+        summary_payload["training/best_test_loss"] = best_test_loss
+    if best_test_step is not None:
+        summary_payload["training/best_test_step"] = best_test_step
+    wandb.log(summary_payload, step=global_step)
+
+    wandb.finish()
+    return test_mean
+
+
+def _wandb_init(config: Any) -> None:
+    import wandb
+
+    cfg_dict = _config_to_dict(config)
+    wandb.init(
+        project=str(getattr(config, "wandb_project", "scaling")),
+        entity=getattr(config, "wandb_entity", None),
+        group=getattr(config, "wandb_group", None),
+        name=getattr(config, "run_name", None),
+        config=cfg_dict,
+    )
+
+
 def train_and_evaluate(config: Any) -> Dict[str, float]:
     """Run training loop, final test evaluation, and checkpointing."""
     _ensure_dir(str(config.checkpoint_dir))
     _ensure_dir(str(config.results_dir))
+    bos_token_id = int(getattr(config, "bos_token_id", 0))
+    dataset_config = getattr(config, "dataset_config", None)
+    dataset_path = getattr(config, "dataset_path", None)
+    tokenizer_path = str(
+        getattr(config, "tokenizer_path", "data/tokenizer/tokenizer.json")
+    )
 
     # Data
     train_np, val_np, test_np = load_splits_as_arrays(
         dataset_name=str(config.dataset_name),
-        dataset_config=str(config.dataset_config),
+        dataset_config=dataset_config,
         seq_len=int(config.seq_len),
         vocab_size=int(config.vocab_size),
+        cache_dir=str(getattr(config, "cache_dir", "data/cache")),
+        require_cache=bool(getattr(config, "require_cached_data", True)),
+        tokenize_batch_size=int(getattr(config, "tokenize_batch_size", 32)),
+        tokenizer_path=tokenizer_path,
+        dataset_path=str(dataset_path) if dataset_path is not None else None,
     )
 
     # Model/state
@@ -235,7 +452,8 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
         vocab_size=int(config.vocab_size),
     )
     rng = jax.random.PRNGKey(0)
-    state = create_train_state(model, config, rng)
+    init_rng = jax.random.PRNGKey(0)
+    state = create_train_state(model, config, init_rng)
     _wandb_init(config)
     import wandb
 
@@ -243,35 +461,49 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
     wandb.config.update({"num_params": num_params})
 
     # Initial validation before any training
-    initial_val_metrics = [
-        eval_step(state, batch)
-        for batch in batch_iterator(
-            val_np,
-            batch_size=int(config.batch_size),
-            shuffle=False,
-            seed=0,
-            drop_last=True,
-        )
-    ]
-    initial_val_mean = _mean_metrics(initial_val_metrics) if initial_val_metrics else {}
+    initial_val_mean = _eval_split(state, val_np, int(config.batch_size), bos_token_id)
     wandb.log({f"val/{k}": v for k, v in initial_val_mean.items()}, step=0)
+
+    eval_every_n_steps = int(getattr(config, "eval_every_n_steps", 0))
+    early_stop_patience = int(getattr(config, "early_stop_patience", 0))
+    early_stop_min_delta = float(getattr(config, "early_stop_min_delta", 0.0))
+    best_test_loss: float | None = None
+    best_test_step: int | None = None
+    plateau_count = 0
+
+    if eval_every_n_steps > 0:
+        best_test_loss = _eval_loss(
+            state, test_np, int(config.batch_size), bos_token_id
+        )
+        best_test_step = 0
+        wandb.log({"test/loss": best_test_loss}, step=0)
+
     wandb.log({"epoch": 0}, step=0)
 
     global_step = 0
-    entropy_every = int(getattr(config, "entropy_every_n_epochs", 1))
-    entropy_num_samples = int(getattr(config, "entropy_num_samples", 10000))
-    entropy_sample_batch_size = int(getattr(config, "entropy_sample_batch_size", 512))
+    early_stopped = False
+    final_epoch = 0
+    batch_size = int(config.batch_size)
+    num_train_batches = train_np.shape[0] // batch_size
+    num_epochs = int(config.num_epochs)
 
-    for epoch in range(int(config.num_epochs)):
-        # Training
-        for batch in batch_iterator(
+    for epoch in range(num_epochs):
+        final_epoch = epoch + 1
+        train_batches = batch_iterator(
             train_np,
-            batch_size=int(config.batch_size),
+            batch_size=batch_size,
             shuffle=True,
             seed=epoch,
             drop_last=True,
-        ):
-            state, metrics = train_step(state, batch)
+        )
+        progress = tqdm(
+            train_batches,
+            total=num_train_batches,
+            desc=f"epoch {epoch + 1}/{num_epochs}",
+            leave=True,
+        )
+        for batch in progress:
+            state, metrics, rng = train_step(state, batch, rng, bos_token_id)
             global_step += 1
             if global_step % int(config.log_every_n_steps) == 0:
                 wandb.log(
@@ -282,75 +514,70 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
                     step=global_step,
                 )
 
+            if eval_every_n_steps > 0 and global_step % eval_every_n_steps == 0:
+                current_test_loss = _eval_loss(
+                    state,
+                    test_np,
+                    int(config.batch_size),
+                    bos_token_id,
+                )
+                wandb.log({"test/loss": current_test_loss}, step=global_step)
+
+                if early_stop_patience > 0:
+                    if best_test_loss is None or current_test_loss < (
+                        best_test_loss - early_stop_min_delta
+                    ):
+                        best_test_loss = current_test_loss
+                        best_test_step = global_step
+                        plateau_count = 0
+                    else:
+                        plateau_count += 1
+                        if plateau_count >= early_stop_patience:
+                            early_stopped = True
+                            break
+
+        progress.close()
+
+        if early_stopped:
+            break
+
         # Validation at end of each epoch
-        val_metrics = [
-            eval_step(state, batch)
-            for batch in batch_iterator(
-                val_np,
-                batch_size=int(config.batch_size),
-                shuffle=False,
-                seed=0,
-                drop_last=True,
-            )
-        ]
-        val_mean = _mean_metrics(val_metrics) if val_metrics else {}
+        val_mean = _eval_split(state, val_np, int(config.batch_size), bos_token_id)
         wandb.log({f"val/{k}": v for k, v in val_mean.items()}, step=global_step)
 
-        # Conditional entropy by sampling from p_theta
-        if (epoch + 1) % entropy_every == 0:
-            rng, entropy_rng = jax.random.split(rng)
-            samples = sample_sequences(
-                apply_fn=state.apply_fn,
-                params=state.params,
-                seq_len=int(config.seq_len),
-                num_samples=entropy_num_samples,
-                batch_size=entropy_sample_batch_size,
-                vocab_size=int(config.vocab_size),
-                rng=entropy_rng,
-            )
-            entropy_dict = compute_conditional_entropy(
-                apply_fn=state.apply_fn,
-                params=state.params,
-                samples=samples,
-                batch_size=entropy_sample_batch_size,
-            )
-            wandb.log(
-                {f"conditional_entropy/{k}": v for k, v in entropy_dict.items()},
-                step=global_step,
-            )
-
-    # Test evaluation
-    test_metrics = [
-        eval_step(state, batch)
-        for batch in batch_iterator(
-            test_np,
-            batch_size=int(config.batch_size),
-            shuffle=False,
-            seed=0,
-            drop_last=True,
+        epoch_idx = epoch + 1
+        epoch_checkpoint_root = os.path.join(
+            str(config.checkpoint_dir),
+            "epochs",
+            f"hidden_dim={int(config.hidden_dim)}",
+            f"epoch={epoch_idx:04d}",
         )
-    ]
-    test_mean = _mean_metrics(test_metrics) if test_metrics else {}
-    wandb.log({f"test/{k}": v for k, v in test_mean.items()}, step=global_step)
+        _save_checkpoint(
+            state=state,
+            config=config,
+            checkpoint_root=epoch_checkpoint_root,
+            wandb_run_id=wandb.run.id,
+            epoch=epoch_idx,
+        )
+        _log_checkpoint_artifact(
+            config=config,
+            checkpoint_root=epoch_checkpoint_root,
+            artifact_name=f"checkpoint-{wandb.run.id}-epoch-{epoch_idx:04d}",
+            wandb_run_id=wandb.run.id,
+            epoch=epoch_idx,
+        )
 
-    # Checkpoint
-    ckpt_dir = os.path.join(
-        str(config.checkpoint_dir), f"hidden_dim={int(config.hidden_dim)}"
+    return _post_training_evals_and_checkpoint(
+        state=state,
+        model=model,
+        config=config,
+        rng=rng,
+        train_np=train_np,
+        val_np=val_np,
+        test_np=test_np,
+        global_step=global_step,
+        final_epoch=final_epoch,
+        early_stopped=early_stopped,
+        best_test_loss=best_test_loss,
+        best_test_step=best_test_step,
     )
-    _ensure_dir(ckpt_dir)
-    checkpointer = ocp.PyTreeCheckpointer()
-    checkpointer.save(
-        os.path.join(ckpt_dir, "ckpt"),
-        {
-            "params": state.params,
-            "config": (
-                OmegaConf.to_container(config, resolve=True)
-                if OmegaConf.is_config(config)
-                else dict(config)
-            ),
-        },
-        force=True,
-    )
-
-    wandb.finish()
-    return test_mean

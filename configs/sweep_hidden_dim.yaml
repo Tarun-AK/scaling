@@ -4,10 +4,10 @@
 
 defaults:
   - base
+  - _self_
 
 hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      hidden_dim: 256,512,1028,2048
-
+      hidden_dim: 128,160,192,256,320,384,512,640,768,1024,1280,1536,2048

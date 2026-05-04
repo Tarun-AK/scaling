@@ -1,0 +1,18 @@
+defaults:
+  - base
+  - _self_
+
+dataset_name: "openwebtext"
+dataset_config: null
+dataset_path: "openwebtext"
+cache_dir: "data/openwebtext_cache"
+tokenizer_path: "openwebtext/tokenizer/tokenizer.json"
+vocab_size: 10000
+bos_token_id: 256
+num_epochs: 1
+require_cached_data: true
+eval_every_n_steps: 2000
+early_stop_patience: 5
+early_stop_min_delta: 0.0001
+entropy_num_samples: 0
+entropy_sample_batch_size: 0

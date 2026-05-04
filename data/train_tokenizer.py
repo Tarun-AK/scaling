@@ -8,20 +8,25 @@ Saves the tokenizer to data/tokenizer/ which dataset.py will load from.
 
 from __future__ import annotations
 
-from datasets import load_dataset
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.processors import TemplateProcessing
 from tokenizers.trainers import BpeTrainer
+from tqdm import tqdm
+
+from data.pg19 import load_pg19_dataset
 
 
 def train_tokenizer(save_path: str = "data/tokenizer") -> None:
-    print("Loading WikiText-103...")
-    ds = load_dataset("wikitext", "wikitext-103-raw-v1")
+    print("Loading PG-19...")
+    ds = load_pg19_dataset()
 
     # Use only train split for fitting the tokenizer
-    texts = [t for t in ds["train"]["text"] if t and t.strip()]
+    texts = []
+    for t in tqdm(ds["train"].text, desc="Collecting texts"):
+        if t and t.strip():
+            texts.append(t)
 
     tokenizer = Tokenizer(BPE(unk_token="<unk>"))
     tokenizer.pre_tokenizer = Whitespace()
@@ -32,7 +37,10 @@ def train_tokenizer(save_path: str = "data/tokenizer") -> None:
     )
 
     print("Training BPE tokenizer...")
-    tokenizer.train_from_iterator(texts, trainer=trainer)
+    tokenizer.train_from_iterator(
+        tqdm(texts, desc="Training BPE"),
+        trainer=trainer,
+    )
 
     # Insert EOS between documents as the paper describes
     eos_id = tokenizer.token_to_id("<eos>")

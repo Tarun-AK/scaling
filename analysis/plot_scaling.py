@@ -13,6 +13,12 @@ You may need to login first:
 
 from __future__ import annotations
 
+import argparse
+import shutil
+import subprocess
+import sys
+import termios
+import tty
 import os
 from typing import Any, Dict, List
 
@@ -24,10 +30,28 @@ import wandb
 PLOT_POSITIONS = [1, 2, 5, 10, 15, 20, 25, 31]
 
 
-def fetch_runs(project: str) -> List[wandb.apis.public.Run]:
-    """Fetch completed runs from a W&B project."""
+def _show_image(path: str) -> None:
+    if shutil.which("kitten") is None:
+        return
+    subprocess.run(["kitten", "icat", path], check=False)
+    if sys.stdin.isatty():
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    else:
+        sys.stdin.read(1)
+    subprocess.run(["kitten", "icat", "--clear"], check=False)
+
+
+def fetch_runs(project: str, group: str | None = None) -> List[wandb.apis.public.Run]:
+    """Fetch completed runs from a W&B project, optionally filtered by group."""
     api = wandb.Api()
-    runs = api.runs(project)
+    filters = {"group": group} if group else {}
+    runs = api.runs(project, filters=filters)
     return [r for r in runs if r.state == "finished"]
 
 
@@ -78,10 +102,19 @@ def plot_scaling(df: pd.DataFrame, out_path: str) -> None:
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
     print(f"Saved to {out_path}")
+    _show_image(out_path)
 
 
 def main() -> None:
-    runs = fetch_runs("scaling")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--group",
+        type=str,
+        default=None,
+        help="W&B group to filter runs by",
+    )
+    args = parser.parse_args()
+    runs = fetch_runs("scaling", group=args.group)
     df = extract_metrics(runs)
     plot_scaling(df, "results/scaling_curves.png")
 

@@ -24,11 +24,23 @@ def main(config: DictConfig) -> None:
     # Ensure run name is set for W&B.
     config.run_name = f"lstm_hd{int(config.hidden_dim)}"
 
-    # Make checkpoint/results dirs relative to original working directory.
-    # Hydra changes cwd into a per-run directory.
+    # Make configurable paths relative to original working directory.
     orig_cwd = hydra.utils.get_original_cwd()
-    config.checkpoint_dir = os.path.join(orig_cwd, str(config.checkpoint_dir))
-    config.results_dir = os.path.join(orig_cwd, str(config.results_dir))
+
+    def _resolve_path(value: str | None) -> str | None:
+        if value is None:
+            return None
+        if os.path.isabs(value):
+            return value
+        return os.path.join(orig_cwd, value)
+
+    config.checkpoint_dir = _resolve_path(str(config.checkpoint_dir))
+    config.results_dir = _resolve_path(str(config.results_dir))
+    config.cache_dir = _resolve_path(str(config.cache_dir))
+    if "tokenizer_path" in config:
+        config.tokenizer_path = _resolve_path(str(config.tokenizer_path))
+    if "dataset_path" in config and config.dataset_path is not None:
+        config.dataset_path = _resolve_path(str(config.dataset_path))
 
     train_and_evaluate(config)
 

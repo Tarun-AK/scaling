@@ -10,4 +10,4 @@ wandb
 numpy
 matplotlib
 pandas
-
+tqdm
