@@ -2,8 +2,9 @@
 
 Usage:
   python analysis/plot_bipartite_mi.py --group <group>
+  python analysis/plot_bipartite_mi.py --group <group> --estimator ckl cjs
   python analysis/plot_bipartite_mi.py --group <group> --estimator sampled
-  python analysis/plot_bipartite_mi.py --group <group> --estimator logged sampled
+  python analysis/plot_bipartite_mi.py --group <group> --estimator ckl cjs sampled
   python analysis/plot_bipartite_mi.py --group <group> --estimator sampled --hf-model openai-community/gpt2-xl
 """
 
@@ -1368,6 +1369,118 @@ def _compute_bipartite_mi_from_sampled_q(
     return out
 
 
+def _compute_ckl_from_samples(
+    samples: np.ndarray,
+    sample_logps: np.ndarray,
+    n_values: list[int],
+    apply_fn,
+    params: dict,
+    batch_size: int,
+    bos_token_id: int,
+    rng: np.random.Generator | None = None,
+) -> dict[int, float]:
+    if rng is None:
+        rng = np.random.default_rng(0)
+    num_samples = sample_logps.shape[0]
+    if num_samples < 2:
+        raise RuntimeError("Need at least 2 samples for CKL estimator")
+    idx_x = rng.choice(num_samples, size=num_samples, replace=True)
+    idx_x_prime = rng.choice(num_samples, size=num_samples, replace=True)
+    out: dict[int, float] = {}
+    max_n = max(n_values)
+    half_max = max_n // 2
+
+    x_prime_tokens = samples[idx_x_prime, :half_max]
+    y_tokens = samples[idx_x, half_max:max_n]
+    cross_seq = np.concatenate([x_prime_tokens, y_tokens], axis=1)
+    cross_logps = _score_logps(
+        apply_fn=apply_fn,
+        params=params,
+        tokens=cross_seq,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+        progress_desc="Scoring CKL cross (x' + y)",
+    )
+
+    for n in n_values:
+        half = n // 2
+        if half < 1:
+            continue
+        logp_y_given_x = np.sum(sample_logps[idx_x, half:n], axis=1)
+        logp_y_given_x_prime = np.sum(cross_logps[:, half:n], axis=1)
+        ckl_estimates = logp_y_given_x - logp_y_given_x_prime
+        out[n] = float(np.mean(ckl_estimates))
+    return out
+
+
+def _compute_cjs_from_samples(
+    samples: np.ndarray,
+    sample_logps: np.ndarray,
+    n_values: list[int],
+    apply_fn,
+    params: dict,
+    batch_size: int,
+    bos_token_id: int,
+    rng: np.random.Generator | None = None,
+) -> dict[int, float]:
+    if rng is None:
+        rng = np.random.default_rng(0)
+    num_samples = sample_logps.shape[0]
+    if num_samples < 2:
+        raise RuntimeError("Need at least 2 samples for CJS estimator")
+    idx_x = rng.choice(num_samples, size=num_samples, replace=True)
+    idx_x_prime = rng.choice(num_samples, size=num_samples, replace=True)
+    out: dict[int, float] = {}
+    max_n = max(n_values)
+    half_max = max_n // 2
+
+    x_prime_tokens = samples[idx_x_prime, :half_max]
+    y_tokens = samples[idx_x, half_max:max_n]
+    cross1 = np.concatenate([x_prime_tokens, y_tokens], axis=1)
+    cross1_logps = _score_logps(
+        apply_fn=apply_fn,
+        params=params,
+        tokens=cross1,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+        progress_desc="Scoring CJS cross 1 (x' + y)",
+    )
+
+    x_tokens = samples[idx_x, :half_max]
+    y_prime_tokens = samples[idx_x_prime, half_max:max_n]
+    cross2 = np.concatenate([x_tokens, y_prime_tokens], axis=1)
+    cross2_logps = _score_logps(
+        apply_fn=apply_fn,
+        params=params,
+        tokens=cross2,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+        progress_desc="Scoring CJS cross 2 (x + y')",
+    )
+
+    for n in n_values:
+        half = n // 2
+        if half < 1:
+            continue
+        logp_y_given_x = np.sum(sample_logps[idx_x, half:n], axis=1, keepdims=True)
+        logp_y_given_x_prime = np.sum(cross1_logps[:, half:n], axis=1, keepdims=True)
+        p = np.exp(logp_y_given_x)
+        q = np.exp(logp_y_given_x_prime)
+        mixture = 0.5 * (p + q)
+        term1 = np.log(2.0) + logp_y_given_x - np.log(mixture)
+
+        logp_y_prime_given_x_prime = np.sum(sample_logps[idx_x_prime, half:n], axis=1, keepdims=True)
+        logp_y_prime_given_x = np.sum(cross2_logps[:, half:n], axis=1, keepdims=True)
+        p_prime = np.exp(logp_y_prime_given_x_prime)
+        q_prime = np.exp(logp_y_prime_given_x)
+        mixture_prime = 0.5 * (p_prime + q_prime)
+        term2 = np.log(2.0) + logp_y_prime_given_x_prime - np.log(mixture_prime)
+
+        js_estimates = 0.5 * term1 + 0.5 * term2
+        out[n] = float(np.mean(js_estimates))
+    return out
+
+
 def _compute_hf_sampled_mi_series(
     model_name: str,
     revision: str | None,
@@ -1623,12 +1736,14 @@ def _plot_bipartite_mi(
         norm = plt.Normalize(vmin=min(hidden_dims), vmax=max(hidden_dims))
 
     line_styles = {
-        "logged": "-",
-        "sampled": "--",
+        "ckl": "-",
+        "cjs": "--",
+        "sampled": ":",
     }
     markers = {
-        "logged": "o",
-        "sampled": "s",
+        "ckl": "o",
+        "cjs": "s",
+        "sampled": "^",
     }
     show_marker = len(estimators) > 1
     fit_handles_by_hidden_dim: dict[int, Line2D] = {}
@@ -1810,10 +1925,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     core.add_argument(
         "--estimator",
         type=str,
-        choices=["logged", "sampled"],
+        choices=["ckl", "cjs", "sampled"],
         nargs="+",
-        default=["logged"],
-        help="One or more estimators: logged sampled",
+        default=["ckl", "cjs"],
+        help="One or more estimators: ckl cjs sampled",
     )
     core.add_argument(
         "--output",
@@ -2225,13 +2340,6 @@ def main() -> None:
         cfg = run.config or {}
         hidden_dim = int(cfg["hidden_dim"])
 
-        if "logged" in estimators:
-            all_values["logged"][hidden_dim] = _compute_logged_mi_for_run(
-                run,
-                hidden_dim,
-                n_values,
-            )
-
         if "sampled" in estimators:
             all_values["sampled"][hidden_dim] = _compute_lstm_sampled_mi_for_run(
                 run,
@@ -2243,6 +2351,93 @@ def main() -> None:
                 cache_dir=args.cache_dir,
                 force_resample=args.force_resample,
             )
+
+        if "ckl" in estimators or "cjs" in estimators:
+            bos_token_id = int(cfg.get("bos_token_id", 0))
+            sample_key = _sample_cache_key(
+                seq_len=n_values[-1],
+                num_samples=args.num_samples,
+                batch_size=args.batch_size,
+                bos_token_id=bos_token_id,
+            )
+            sample_cache_path, log_q_y_cache_path = _sample_cache_paths(
+                args.cache_dir,
+                run.id,
+                sample_key,
+            )
+            reusable_cache = _find_reusable_complete_cache(
+                cache_dir=args.cache_dir,
+                run_id=run.id,
+                seq_len=n_values[-1],
+                target_num_samples=args.num_samples,
+                batch_size=args.batch_size,
+                bos_token_id=bos_token_id,
+                n_values=n_values,
+            )
+            if reusable_cache is None:
+                raise RuntimeError(
+                    f"No complete cached samples found for hidden_dim={hidden_dim}. "
+                    "Re-run with --force-resample to regenerate."
+                )
+            sample_logps = reusable_cache[0]
+            
+            cached_samples = _load_sample_cache(sample_cache_path)
+            if cached_samples is None:
+                raise RuntimeError(
+                    f"Failed to load cached samples from {sample_cache_path}"
+                )
+            samples, _ = cached_samples
+
+            if "ckl" in estimators or "cjs" in estimators:
+                import jax
+                from models.lstm import LSTMLanguageModel
+                from training.trainer import create_train_state
+
+                ckpt_path = _download_checkpoint_artifact(run.id, api, args.cache_dir)
+                model = LSTMLanguageModel(
+                    hidden_dim=int(cfg["hidden_dim"]),
+                    num_layers=int(cfg["num_layers"]),
+                    vocab_size=int(cfg["vocab_size"]),
+                )
+                rng = jax.random.PRNGKey(0)
+                state_cfg = SimpleNamespace(
+                    batch_size=int(cfg.get("batch_size", 1)),
+                    seq_len=int(cfg.get("seq_len", n_values[-1])),
+                    learning_rate=float(cfg.get("learning_rate", 1e-3)),
+                )
+                state = create_train_state(model, state_cfg, rng)
+                state, restored = _load_checkpoint(ckpt_path, state)
+                ckpt_run_id = restored.get("wandb_run_id")
+                if ckpt_run_id != run.id:
+                    raise RuntimeError(
+                        "Checkpoint/run mismatch: "
+                        f"ckpt_run_id={ckpt_run_id}, run.id={run.id}"
+                    )
+                sample_params = _normalize_params_for_step(
+                    state.params,
+                    int(cfg["num_layers"]),
+                )
+
+                if "ckl" in estimators:
+                    all_values["ckl"][hidden_dim] = _compute_ckl_from_samples(
+                        samples=samples,
+                        sample_logps=sample_logps,
+                        n_values=n_values,
+                        apply_fn=state.apply_fn,
+                        params=sample_params,
+                        batch_size=args.batch_size,
+                        bos_token_id=bos_token_id,
+                    )
+                if "cjs" in estimators:
+                    all_values["cjs"][hidden_dim] = _compute_cjs_from_samples(
+                        samples=samples,
+                        sample_logps=sample_logps,
+                        n_values=n_values,
+                        apply_fn=state.apply_fn,
+                        params=sample_params,
+                        batch_size=args.batch_size,
+                        bos_token_id=bos_token_id,
+                    )
 
     extra_series: list[dict[str, Any]] = []
     if args.hf_model is not None:
