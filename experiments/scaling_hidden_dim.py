@@ -22,7 +22,8 @@ def main(config: DictConfig) -> None:
     """
 
     # Ensure run name is set for W&B.
-    config.run_name = f"lstm_hd{int(config.hidden_dim)}"
+    model_type = str(getattr(config, "model_type", "lstm"))
+    config.run_name = f"{model_type}_hd{int(config.hidden_dim)}"
 
     # Make configurable paths relative to original working directory.
     orig_cwd = hydra.utils.get_original_cwd()

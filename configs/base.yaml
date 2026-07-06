@@ -1,10 +1,28 @@
 # Base configuration for lstm_scaling experiments.
 hidden_dim: 128
+model_type: "lstm"
+mamba_d_state: 16
+mamba_state_size: 16
+mamba_head_dim: 16
+mamba_chunk_size: 128
+mamba_expand: 2
+mamba_conv_kernel: 4
+transformer_num_heads: 8
+transformer_num_kv_heads: 8
+transformer_ffn_mult: 2.6666666667
+transformer_rope_theta: 1000000.0
+transformer_layer_norm_epsilon: 1e-6
+transformer_tie_word_embeddings: true
 num_layers: 1
 seq_len: 512
 batch_size: 64
+grad_accum_steps: 1
 learning_rate: 1e-3
+lr_schedule: "constant" # constant | warmup_cosine
+warmup_steps: 0
+min_learning_rate: 0.0
 num_epochs: 10
+dry_run: false
 run_name: ""
 dataset_name: "wikitext"
 dataset_config: "wikitext-103-raw-v1"

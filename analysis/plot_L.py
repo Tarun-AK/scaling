@@ -1,4 +1,4 @@
-"""Plot L_infinity vs hidden_dim."""
+"""Plot L vs hidden_dim."""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 
-import wandb
 from analysis.plot_group_labels import distinct_group_labels
+
+import wandb
 
 plt.style.use("~/plotStyle.mplstyle")
 
@@ -38,8 +39,8 @@ def _show_image(path: str) -> None:
     subprocess.run(["kitten", "icat", "--clear"], check=False)
 
 
-def power_law(n, l_inf, c, power):
-    return l_inf + c * np.power(n, power)
+def power_law(n, l_value, c, power):
+    return l_value + c * np.power(n, power)
 
 
 def power_law_no_offset(n, c, power):
@@ -66,15 +67,12 @@ def _load_external_ln_data(source: str) -> tuple[np.ndarray, np.ndarray]:
     return data[:, 0], data[:, 1]
 
 
-def _external_h_inf(source: str, tail_points: int) -> float:
+def _external_h(source: str) -> float:
     _, losses = _load_external_ln_data(source)
     losses = np.asarray(losses, dtype=float)
     if losses.size == 0:
         raise RuntimeError(f"No losses in external source '{source}'")
-    tail_n = min(int(tail_points), int(losses.size))
-    if tail_n < 1:
-        raise RuntimeError("tail_points must be >= 1")
-    return float(np.mean(losses[-tail_n:]))
+    return float(np.mean(losses))
 
 
 def fetch_runs(project: str, group: str | None = None) -> list[wandb.apis.public.Run]:
@@ -155,34 +153,15 @@ def extract_l_ngrams(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["hidden_dim", "n"])
 
 
-def fit_l_infinity(df: pd.DataFrame, fit_nmax: int = 50) -> pd.DataFrame:
-    rows = []
-    for hidden_dim, group in df.groupby("hidden_dim"):
-        group = group.sort_values("n")
-        ns = group["n"].to_numpy(dtype=float)
-        losses = group["loss"].to_numpy(dtype=float)
-        fit_mask = ns <= fit_nmax
-        ns_fit = ns[fit_mask]
-        losses_fit = losses[fit_mask]
-        if len(ns_fit) == 0:
-            continue
-        p0 = [losses_fit[-1], losses_fit[0] - losses_fit[-1], -0.5]
-        try:
-            popt, _ = curve_fit(
-                power_law,
-                ns_fit,
-                losses_fit,
-                p0=p0,
-                maxfev=10_000,
-                bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, 0]),
-            )
-            l_inf = float(popt[0])
-        except RuntimeError:
-            l_inf = float(np.min(losses_fit))
-        rows.append({"hidden_dim": int(hidden_dim), "l_inf": l_inf})
-    if not rows:
-        return pd.DataFrame(columns=["hidden_dim", "l_inf"])
-    return pd.DataFrame(rows).sort_values("hidden_dim")
+def compute_l(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["hidden_dim", "l"])
+    return (
+        df.groupby("hidden_dim", as_index=False)[["loss"]]
+        .mean()
+        .rename(columns={"loss": "l"})
+        .sort_values("hidden_dim")
+    )
 
 
 def extract_final_losses(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
@@ -224,18 +203,17 @@ def extract_final_losses(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
     )
 
 
-def plot_l_infinity(
-    l_inf_by_group: dict[str, pd.DataFrame],
-    labels_by_group: dict[str, str],
+def plot_l(
+    l_by_group: dict[str, pd.DataFrame],
     out_path: str,
     title: str | None,
-    external_h_inf: float | None = None,
+    external_h: float | None = None,
+    labels_by_group: dict[str, str] | None = None,
 ) -> None:
-    non_empty = {k: v for k, v in l_inf_by_group.items() if not v.empty}
+    non_empty = {k: v for k, v in l_by_group.items() if not v.empty}
     if not non_empty:
         raise RuntimeError("No data found.")
     plt.figure(figsize=(8, 7.5))
-    show_group_name = len(non_empty) > 1
 
     def _plot_with_fit(
         x: np.ndarray,
@@ -247,6 +225,7 @@ def plot_l_infinity(
         asymptote_label: str,
         color: str | None = None,
         fixed_asymptote: float | None = None,
+        include_group_name_in_legend: bool = False,
     ) -> float | None:
         fit_mask = (x > 0) & (y > 0)
         nu = None
@@ -303,11 +282,11 @@ def plot_l_infinity(
         fit_terms = []
         if nu is not None:
             fit_terms.append(rf"$\nu$={nu:.3f}")
-        legend_suffix = f" [{series_label}]" if show_group_name else ""
+        legend_suffix = f" [{series_label}]" if include_group_name_in_legend else ""
         if fixed_asymptote is not None and coef is not None and power_fit is not None:
-            label = rf"$L_\infty(d_h)={coef:.3g}\times d_h^{{{power_fit:.3f}}}+H_\infty${legend_suffix}"
+            label = rf"$L(d_h)={coef:.3g}\times d_h^{{{power_fit:.3f}}}+H${legend_suffix}"
         elif fixed_asymptote is None and coef is not None and power_fit is not None:
-            label = rf"$L_\infty(d_h)={coef:.3g}\times d_h^{{{power_fit:.3f}}}${legend_suffix}"
+            label = rf"$L(d_h)={coef:.3g}\times d_h^{{{power_fit:.3f}}}${legend_suffix}"
         else:
             base = f"{label_base}{legend_suffix}"
             label = f"{base} ({', '.join(fit_terms)})" if fit_terms else base
@@ -333,17 +312,20 @@ def plot_l_infinity(
     colors = plt.cm.tab10.colors
     markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
     nus: list[float] = []
-    for idx, (group_name, l_inf_df) in enumerate(non_empty.items()):
+    show_group_name = len(non_empty) > 1
+    labels_by_group = labels_by_group or {}
+    for idx, (group_name, l_df) in enumerate(non_empty.items()):
         group_label = labels_by_group.get(group_name, group_name) if show_group_name else ""
         nu_group = _plot_with_fit(
-            l_inf_df["hidden_dim"].to_numpy(dtype=float),
-            l_inf_df["l_inf"].to_numpy(dtype=float),
+            l_df["hidden_dim"].to_numpy(dtype=float),
+            l_df["l"].to_numpy(dtype=float),
             series_label=group_label,
             marker=markers[idx % len(markers)],
-            label_base=rf"$L_{{\infty}}(d_h)$",
-            asymptote_label=r"$L_{\infty}(\infty)$",
+            label_base=rf"$L(d_h)$",
+            asymptote_label=r"$L(\infty)$",
             color=colors[idx % len(colors)],
-            fixed_asymptote=external_h_inf,
+            fixed_asymptote=external_h,
+            include_group_name_in_legend=show_group_name,
         )
         if nu_group is not None:
             nus.append(float(nu_group))
@@ -374,54 +356,47 @@ def plot_l_infinity(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--group", type=str, nargs="+", default=None)
-    parser.add_argument("--output", type=str, default="results/L_infinity.png")
+    parser.add_argument("--output", type=str, default="results/L.png")
     parser.add_argument("--max-hidden-dim", type=int, default=None)
     parser.add_argument(
         "--include-external",
         type=str,
         choices=["cagnetta", "kaplan", "shengqi", "shengi"],
         default=None,
-        help="Use external ln source to define fixed H_infinity",
-    )
-    parser.add_argument(
-        "--external-tail-points",
-        type=int,
-        default=20,
-        help="Number of tail points from external curve to average for H_infinity",
+        help="Use external ln source to define fixed H",
     )
     args = parser.parse_args()
 
     groups = args.group if args.group else [None]
-    group_names = [g for g in groups if g is not None]
-    labels_by_group = distinct_group_labels(group_names)
-    l_inf_by_group: dict[str, pd.DataFrame] = {}
+    l_by_group: dict[str, pd.DataFrame] = {}
     for group_name in groups:
         runs = fetch_runs("tarunadvaith-/scaling", group=group_name)
         l_n_df = extract_l_ngrams(runs)
         if args.max_hidden_dim is not None:
             l_n_df = l_n_df[l_n_df["hidden_dim"] <= args.max_hidden_dim]
         key = group_name if group_name is not None else "all"
-        l_inf_by_group[key] = fit_l_infinity(l_n_df)
-        if key not in labels_by_group:
-            labels_by_group[key] = key
+        l_by_group[key] = compute_l(l_n_df)
+        if l_by_group[key].empty:
+            group_text = group_name if group_name is not None else "all runs"
+            raise RuntimeError(
+                f"No combined n-gram losses found for group '{group_text}'."
+            )
 
     title = ", ".join(groups) if args.group else None
-    external_h_inf = None
+    labels_by_group = distinct_group_labels([g for g in groups if g is not None])
+    external_h = None
     if args.include_external is not None:
-        external_h_inf = _external_h_inf(
-            args.include_external, args.external_tail_points
-        )
+        external_h = _external_h(args.include_external)
         print(
-            f"Using H_infinity from external source '{args.include_external}': "
-            f"H_infinity={external_h_inf:.6g} "
-            f"(tail_points={args.external_tail_points})"
+            f"Using H from external source '{args.include_external}': "
+            f"H={external_h:.6g}"
         )
-    plot_l_infinity(
-        l_inf_by_group,
-        labels_by_group,
+    plot_l(
+        l_by_group,
         args.output,
         title,
-        external_h_inf=external_h_inf,
+        external_h=external_h,
+        labels_by_group=labels_by_group,
     )
 
 

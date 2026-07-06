@@ -30,6 +30,9 @@ from tqdm import tqdm
 from data.dataloader import batch_iterator
 from data.dataset import load_splits_as_arrays
 from models.lstm import LSTMLanguageModel
+from models.mamba import MambaLanguageModel
+from models.transformer import TransformerLanguageModel
+from models.vanilla_rnn import VanillaRNNLanguageModel
 from training.loss import cross_entropy_loss
 from training.metrics import compute_all_ngram_losses
 
@@ -39,15 +42,57 @@ class TrainState(train_state.TrainState):
 
 
 def create_train_state(
-    model: LSTMLanguageModel, config: Any, rng: jax.Array
+    model: (
+        LSTMLanguageModel
+        | VanillaRNNLanguageModel
+        | MambaLanguageModel
+        | TransformerLanguageModel
+    ),
+    config: Any,
+    rng: jax.Array,
+    tx: optax.GradientTransformation | None = None,
 ) -> TrainState:
     """Create an initialized TrainState."""
     dummy_tokens = jnp.zeros(
         (int(config.batch_size), int(config.seq_len)), dtype=jnp.int32
     )
     params = model.init(rng, dummy_tokens)["params"]
-    tx = optax.adam(learning_rate=float(config.learning_rate))
+    if tx is None:
+        tx = optax.adam(learning_rate=float(config.learning_rate))
     return TrainState.create(apply_fn=model.apply, params=params, tx=tx)
+
+
+def _build_optimizer(config: Any, total_train_steps: int) -> optax.GradientTransformation:
+    learning_rate = float(config.learning_rate)
+    schedule_type = str(getattr(config, "lr_schedule", "constant")).lower()
+    if schedule_type == "constant":
+        return optax.adam(learning_rate=learning_rate)
+
+    if schedule_type != "warmup_cosine":
+        raise RuntimeError(
+            "Unsupported lr_schedule. Expected one of ['constant', 'warmup_cosine'], "
+            f"got '{schedule_type}'"
+        )
+
+    warmup_steps = int(getattr(config, "warmup_steps", 0))
+    min_learning_rate = float(getattr(config, "min_learning_rate", 0.0))
+    if warmup_steps < 0:
+        raise RuntimeError("warmup_steps must be >= 0")
+    if min_learning_rate < 0.0:
+        raise RuntimeError("min_learning_rate must be >= 0")
+    if min_learning_rate > learning_rate:
+        raise RuntimeError("min_learning_rate must be <= learning_rate")
+
+    warmup_steps_eff = min(warmup_steps, max(0, int(total_train_steps) - 1))
+    decay_steps = max(1, int(total_train_steps) - warmup_steps_eff)
+    lr_schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=learning_rate,
+        warmup_steps=warmup_steps_eff,
+        decay_steps=decay_steps,
+        end_value=min_learning_rate,
+    )
+    return optax.adam(learning_rate=lr_schedule)
 
 
 def _prepend_bos(tokens: jax.Array, bos_token_id: int) -> jax.Array:
@@ -75,13 +120,13 @@ def _normalize_params_for_step(params: dict, num_layers: int) -> dict:
 
 
 @functools.partial(jax.jit, static_argnames=("bos_token_id",))
-def train_step(
+def _microbatch_grad_step(
     state: TrainState,
     batch: jax.Array,
     rng: jax.Array,
     bos_token_id: int,
-) -> Tuple[TrainState, Dict[str, jax.Array], jax.Array]:
-    """Perform a single optimization step."""
+) -> Tuple[Dict[str, jax.Array], jax.Array, jax.Array]:
+    """Compute gradients for a single microbatch."""
     inputs = _prepend_bos(batch, bos_token_id)
     observed_next_tokens = batch
 
@@ -91,8 +136,52 @@ def train_step(
         return loss, logits
 
     (loss, _), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    new_state = state.apply_gradients(grads=grads)
-    return new_state, {"loss": loss}, rng
+    return grads, loss, rng
+
+
+def train_step(
+    state: TrainState,
+    batch: jax.Array,
+    rng: jax.Array,
+    bos_token_id: int,
+    grad_accum_steps: int,
+) -> Tuple[TrainState, Dict[str, jax.Array], jax.Array]:
+    """Perform one optimizer step using gradient accumulation."""
+    if grad_accum_steps < 1:
+        raise RuntimeError("grad_accum_steps must be >= 1")
+
+    if grad_accum_steps == 1:
+        grads, loss, rng = _microbatch_grad_step(state, batch, rng, bos_token_id)
+        new_state = state.apply_gradients(grads=grads)
+        return new_state, {"loss": loss}, rng
+
+    batch_size = int(batch.shape[0])
+    if batch_size % int(grad_accum_steps) != 0:
+        raise RuntimeError(
+            f"batch_size={batch_size} must be divisible by grad_accum_steps={grad_accum_steps}"
+        )
+
+    micro_batch_size = batch_size // int(grad_accum_steps)
+    batch_reshaped = batch.reshape(int(grad_accum_steps), micro_batch_size, batch.shape[1])
+
+    grads_accum = None
+    losses: list[jax.Array] = []
+    for micro_batch in batch_reshaped:
+        grads, loss, rng = _microbatch_grad_step(state, micro_batch, rng, bos_token_id)
+        losses.append(loss)
+        if grads_accum is None:
+            grads_accum = grads
+        else:
+            grads_accum = jax.tree_util.tree_map(lambda a, b: a + b, grads_accum, grads)
+
+    assert grads_accum is not None
+    grads_accum = jax.tree_util.tree_map(
+        lambda g: g / jnp.asarray(float(grad_accum_steps), dtype=g.dtype),
+        grads_accum,
+    )
+    new_state = state.apply_gradients(grads=grads_accum)
+    mean_loss = jnp.mean(jnp.stack(losses))
+    return new_state, {"loss": mean_loss}, rng
 
 
 @functools.partial(jax.jit, static_argnames=("bos_token_id",))
@@ -180,7 +269,12 @@ def _eval_loss(
 
 
 def _sample_sequences(
-    model: LSTMLanguageModel,
+    model: (
+        LSTMLanguageModel
+        | VanillaRNNLanguageModel
+        | MambaLanguageModel
+        | TransformerLanguageModel
+    ),
     params: dict,
     seq_len: int,
     num_samples: int,
@@ -203,7 +297,8 @@ def _sample_sequences(
             new_state = {"carry": lstm_carry, "token": next_token, "rng": rng}
             return new_state, next_token
 
-        init_token = jnp.full((init_carry[0][0].shape[0],), bos_token_id)
+        batch_size_local = int(jax.tree_util.tree_leaves(init_carry)[0].shape[0])
+        init_token = jnp.full((batch_size_local,), bos_token_id)
         carry = {"carry": init_carry, "token": init_token, "rng": batch_rng}
         _, tokens = jax.lax.scan(scan_step, carry, jnp.arange(seq_len))
         return jnp.transpose(tokens, (1, 0))
@@ -264,6 +359,7 @@ def _compute_conditional_entropy_from_samples(
 
 def _checkpoint_metadata(config: Any, epoch: int | None) -> dict[str, int | str]:
     metadata: dict[str, int | str] = {
+        "model_type": str(getattr(config, "model_type", "lstm")),
         "hidden_dim": int(config.hidden_dim),
         "num_layers": int(config.num_layers),
         "seq_len": int(config.seq_len),
@@ -320,7 +416,12 @@ def _log_checkpoint_artifact(
 def _post_training_evals_and_checkpoint(
     *,
     state: TrainState,
-    model: LSTMLanguageModel,
+    model: (
+        LSTMLanguageModel
+        | VanillaRNNLanguageModel
+        | MambaLanguageModel
+        | TransformerLanguageModel
+    ),
     config: Any,
     rng: jax.Array,
     train_np: np.ndarray,
@@ -355,26 +456,32 @@ def _post_training_evals_and_checkpoint(
     entropy_num_samples = int(getattr(config, "entropy_num_samples", 0))
     entropy_batch_size = int(getattr(config, "entropy_sample_batch_size", 0))
     if entropy_num_samples > 0 and entropy_batch_size > 0:
-        rng, entropy_rng = jax.random.split(rng)
-        sample_params = _normalize_params_for_step(state.params, int(config.num_layers))
-        samples = _sample_sequences(
-            model=model,
-            params=sample_params,
-            seq_len=int(config.seq_len),
-            num_samples=entropy_num_samples,
-            batch_size=entropy_batch_size,
-            bos_token_id=bos_token_id,
-            rng=entropy_rng,
-        )
-        entropy_dict = _compute_conditional_entropy_from_samples(
-            apply_fn=state.apply_fn,
-            params=state.params,
-            samples=samples,
-            batch_size=entropy_batch_size,
-            bos_token_id=bos_token_id,
-        )
-        if entropy_dict:
-            wandb.log({f"conditional_entropy/{k}": v for k, v in entropy_dict.items()})
+        try:
+            rng, entropy_rng = jax.random.split(rng)
+            sample_params = _normalize_params_for_step(state.params, int(config.num_layers))
+            samples = _sample_sequences(
+                model=model,
+                params=sample_params,
+                seq_len=int(config.seq_len),
+                num_samples=entropy_num_samples,
+                batch_size=entropy_batch_size,
+                bos_token_id=bos_token_id,
+                rng=entropy_rng,
+            )
+            entropy_dict = _compute_conditional_entropy_from_samples(
+                apply_fn=state.apply_fn,
+                params=state.params,
+                samples=samples,
+                batch_size=entropy_batch_size,
+                bos_token_id=bos_token_id,
+            )
+            if entropy_dict:
+                wandb.log(
+                    {f"conditional_entropy/{k}": v for k, v in entropy_dict.items()}
+                )
+        except Exception as exc:
+            print(f"Warning: skipping conditional entropy post-eval due to error: {exc}")
+            wandb.log({"conditional_entropy/skipped": 1})
 
     final_checkpoint_root = os.path.join(
         str(config.checkpoint_dir), f"hidden_dim={int(config.hidden_dim)}"
@@ -446,19 +553,119 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
     )
 
     # Model/state
-    model = LSTMLanguageModel(
-        hidden_dim=int(config.hidden_dim),
-        num_layers=int(config.num_layers),
-        vocab_size=int(config.vocab_size),
-    )
+    model_type = str(getattr(config, "model_type", "lstm")).lower()
+    if model_type == "lstm":
+        model = LSTMLanguageModel(
+            hidden_dim=int(config.hidden_dim),
+            num_layers=int(config.num_layers),
+            vocab_size=int(config.vocab_size),
+        )
+    elif model_type == "mamba":
+        model = MambaLanguageModel(
+            hidden_dim=int(config.hidden_dim),
+            num_layers=int(config.num_layers),
+            vocab_size=int(config.vocab_size),
+            state_size=int(
+                getattr(config, "mamba_state_size", getattr(config, "mamba_d_state", 16))
+            ),
+            head_dim=int(getattr(config, "mamba_head_dim", 16)),
+            chunk_size=int(getattr(config, "mamba_chunk_size", 256)),
+            expand=int(getattr(config, "mamba_expand", 2)),
+            conv_kernel=int(getattr(config, "mamba_conv_kernel", 4)),
+        )
+    elif model_type == "vanilla_rnn":
+        model = VanillaRNNLanguageModel(
+            hidden_dim=int(config.hidden_dim),
+            num_layers=int(config.num_layers),
+            vocab_size=int(config.vocab_size),
+        )
+    elif model_type == "transformer":
+        model = TransformerLanguageModel(
+            hidden_dim=int(config.hidden_dim),
+            num_layers=int(config.num_layers),
+            vocab_size=int(config.vocab_size),
+            num_heads=int(getattr(config, "transformer_num_heads", 8)),
+            num_kv_heads=int(
+                getattr(
+                    config,
+                    "transformer_num_kv_heads",
+                    getattr(config, "transformer_num_heads", 8),
+                )
+            ),
+            ffn_mult=float(getattr(config, "transformer_ffn_mult", 8.0 / 3.0)),
+            rope_theta=float(getattr(config, "transformer_rope_theta", 1_000_000.0)),
+            layer_norm_epsilon=float(
+                getattr(config, "transformer_layer_norm_epsilon", 1e-6)
+            ),
+            tie_word_embeddings=bool(
+                getattr(config, "transformer_tie_word_embeddings", True)
+            ),
+        )
+    else:
+        raise RuntimeError(
+            "Unsupported model_type. Expected one of: "
+            "['lstm', 'mamba', 'vanilla_rnn', 'transformer'], got "
+            f"'{model_type}'"
+        )
     rng = jax.random.PRNGKey(0)
     init_rng = jax.random.PRNGKey(0)
-    state = create_train_state(model, config, init_rng)
+
+    batch_size = int(config.batch_size)
+    grad_accum_steps = int(getattr(config, "grad_accum_steps", 1))
+    if grad_accum_steps < 1:
+        raise RuntimeError("grad_accum_steps must be >= 1")
+    if batch_size % grad_accum_steps != 0:
+        raise RuntimeError(
+            f"batch_size={batch_size} must be divisible by grad_accum_steps={grad_accum_steps}"
+        )
+    seq_len = int(config.seq_len)
+    num_train_batches = train_np.shape[0] // batch_size
+    num_epochs = int(config.num_epochs)
+    total_train_steps = max(1, num_train_batches * num_epochs)
+
+    tx = _build_optimizer(config, total_train_steps)
+    state = create_train_state(model, config, init_rng, tx=tx)
     _wandb_init(config)
     import wandb
 
     num_params = sum(x.size for x in jax.tree_util.tree_leaves(state.params))
     wandb.config.update({"num_params": num_params})
+
+    if bool(getattr(config, "dry_run", False)):
+        first_batch = next(
+            batch_iterator(
+                train_np,
+                batch_size=int(config.batch_size),
+                shuffle=False,
+                seed=0,
+                drop_last=True,
+            ),
+            None,
+        )
+        if first_batch is not None:
+            state, metrics, rng = train_step(
+                state,
+                first_batch,
+                rng,
+                bos_token_id,
+                grad_accum_steps,
+            )
+            _ = eval_loss_step(state, first_batch, bos_token_id)
+            wandb.log(
+                {
+                    "dry_run": 1,
+                    "num_params": num_params,
+                    "dry_run/train_loss": float(jax.device_get(metrics["loss"])),
+                },
+                step=0,
+            )
+        else:
+            wandb.log(
+                {"dry_run": 1, "num_params": num_params, "dry_run/no_batch": 1},
+                step=0,
+            )
+        wandb.finish()
+        return {"dry_run": 1.0, "num_params": float(num_params)}
 
     # Initial validation before any training
     initial_val_mean = _eval_split(state, val_np, int(config.batch_size), bos_token_id)
@@ -483,9 +690,6 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
     global_step = 0
     early_stopped = False
     final_epoch = 0
-    batch_size = int(config.batch_size)
-    num_train_batches = train_np.shape[0] // batch_size
-    num_epochs = int(config.num_epochs)
 
     for epoch in range(num_epochs):
         final_epoch = epoch + 1
@@ -503,8 +707,23 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
             leave=True,
         )
         for batch in progress:
-            state, metrics, rng = train_step(state, batch, rng, bos_token_id)
+            state, metrics, rng = train_step(
+                state,
+                batch,
+                rng,
+                bos_token_id,
+                grad_accum_steps,
+            )
             global_step += 1
+            rate = progress.format_dict.get("rate", None)
+            if rate is not None:
+                progress.set_postfix(
+                    {
+                        "it/s": f"{rate:.2f}",
+                        "tok/s": f"{rate * batch_size * seq_len:,.0f}",
+                    },
+                    refresh=False,
+                )
             if global_step % int(config.log_every_n_steps) == 0:
                 wandb.log(
                     {
@@ -567,17 +786,21 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
             epoch=epoch_idx,
         )
 
-    return _post_training_evals_and_checkpoint(
-        state=state,
-        model=model,
-        config=config,
-        rng=rng,
-        train_np=train_np,
-        val_np=val_np,
-        test_np=test_np,
-        global_step=global_step,
-        final_epoch=final_epoch,
-        early_stopped=early_stopped,
-        best_test_loss=best_test_loss,
-        best_test_step=best_test_step,
-    )
+    try:
+        return _post_training_evals_and_checkpoint(
+            state=state,
+            model=model,
+            config=config,
+            rng=rng,
+            train_np=train_np,
+            val_np=val_np,
+            test_np=test_np,
+            global_step=global_step,
+            final_epoch=final_epoch,
+            early_stopped=early_stopped,
+            best_test_loss=best_test_loss,
+            best_test_step=best_test_step,
+        )
+    except Exception:
+        wandb.finish(exit_code=1)
+        raise

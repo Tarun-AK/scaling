@@ -2,27 +2,21 @@
 
 Usage:
   python analysis/plot_bipartite_mi.py --group <group>
-  python analysis/plot_bipartite_mi.py --group <group> --estimator ckl cjs
-  python analysis/plot_bipartite_mi.py --group <group> --estimator sampled
-  python analysis/plot_bipartite_mi.py --group <group> --estimator ckl cjs sampled
-  python analysis/plot_bipartite_mi.py --group <group> --estimator sampled --hf-model openai-community/gpt2-xl
+  python analysis/plot_bipartite_mi.py --group <group> --estimator direct v-club
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
-import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
 import termios
-import time
 import tty
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -30,11 +24,10 @@ from matplotlib.lines import Line2D
 from tqdm import tqdm
 
 import wandb
+from analysis.plot_group_labels import distinct_group_labels
 
 WANDB_PROJECT = "tarunadvaith-/scaling"
 DEFAULT_N_VALUES = [
-    # 2,
-    # 4,
     6,
     8,
     10,
@@ -68,13 +61,131 @@ DEFAULT_N_VALUES = [
     1136,
     1348,
     1600,
+    1800,
+    2048,
 ]
 DEFAULT_MIN_N = min(DEFAULT_N_VALUES)
-DEFAULT_MAX_N = 1600
+DEFAULT_MAX_N = 2048
 DEFAULT_NUM_N_VALUES = 40
-DEFAULT_HF_SAVE_EVERY_BATCHES = 8
 FIT_NMAX = 128
+FIT_NMIN = 1
 plt.style.use("~/plotStyle.mplstyle")
+
+
+def _data_cache_key(
+    *,
+    split: str,
+    seq_len: int,
+    num_samples: int | None,
+    bos_token_id: int,
+    seed: int | None,
+) -> str:
+    if num_samples is None:
+        return f"data_{split}_seq{int(seq_len)}_numall_bos{int(bos_token_id)}"
+    return (
+        f"data_{split}_seq{int(seq_len)}_num{int(num_samples)}_"
+        f"bos{int(bos_token_id)}_seed{int(seed or 0)}"
+    )
+
+
+def _data_cache_paths(
+    cache_dir: str,
+    run_id: str,
+    data_key: str,
+) -> tuple[str, str]:
+    run_cache_dir = os.path.join(os.path.abspath(cache_dir), run_id)
+    os.makedirs(run_cache_dir, exist_ok=True)
+    sample_cache_path = os.path.join(run_cache_dir, f"data_samples_{data_key}.npz")
+    log_q_y_cache_path = os.path.join(run_cache_dir, f"data_log_q_y_{data_key}.npz")
+    return sample_cache_path, log_q_y_cache_path
+
+
+def _data_estimator_cache_path(
+    cache_dir: str,
+    run_id: str,
+    data_key: str,
+    estimator: str,
+) -> str:
+    run_cache_dir = os.path.join(os.path.abspath(cache_dir), run_id)
+    os.makedirs(run_cache_dir, exist_ok=True)
+    safe_estimator = estimator.replace("-", "")
+    return os.path.join(run_cache_dir, f"data_{safe_estimator}_{data_key}.npz")
+
+
+def _load_data_sample_cache(
+    sample_cache_path: str,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if not os.path.exists(sample_cache_path):
+        return None
+    with np.load(sample_cache_path) as data:
+        if "samples" not in data or "sample_logps" not in data:
+            return None
+        samples = np.array(data["samples"])
+        sample_logps = np.array(data["sample_logps"])
+    if samples.shape != sample_logps.shape:
+        return None
+    return samples, sample_logps
+
+
+def _save_data_sample_cache(
+    sample_cache_path: str,
+    samples: np.ndarray,
+    sample_logps: np.ndarray,
+) -> None:
+    np.savez_compressed(
+        sample_cache_path,
+        samples=samples,
+        sample_logps=sample_logps,
+    )
+
+
+def _load_data_chunks(
+    *,
+    cfg: dict,
+    split: str,
+    num_samples: int | None,
+    rng: np.random.Generator | None,
+) -> np.ndarray:
+    from data.dataset import load_splits_as_arrays
+
+    dataset_config = cfg.get("dataset_config")
+    dataset_path = cfg.get("dataset_path")
+    train_np, val_np, test_np = load_splits_as_arrays(
+        dataset_name=str(cfg["dataset_name"]),
+        dataset_config=dataset_config,
+        seq_len=int(cfg["seq_len"]),
+        vocab_size=int(cfg["vocab_size"]),
+        cache_dir=str(cfg.get("cache_dir", "data/cache")),
+        require_cache=bool(cfg.get("require_cached_data", True)),
+        tokenize_batch_size=int(cfg.get("tokenize_batch_size", 32)),
+        tokenizer_path=str(cfg.get("tokenizer_path", "data/tokenizer/tokenizer.json")),
+        dataset_path=str(dataset_path) if dataset_path is not None else None,
+    )
+
+    if split == "train":
+        data = train_np
+    elif split == "test":
+        data = test_np
+    else:
+        data = val_np
+
+    num_rows = int(data.shape[0])
+    if num_rows < 1:
+        raise RuntimeError(f"No cached rows available for split='{split}'")
+
+    if num_samples is None:
+        return np.asarray(data, dtype=np.int32)
+
+    take = int(num_samples)
+    if take <= num_rows:
+        if rng is None:
+            raise RuntimeError("rng must be provided when num_samples is set")
+        idx = rng.choice(num_rows, size=take, replace=False)
+    else:
+        if rng is None:
+            raise RuntimeError("rng must be provided when num_samples is set")
+        idx = rng.choice(num_rows, size=take, replace=True)
+    return np.array(data[idx], dtype=np.int32)
 
 
 def _show_image(path: str) -> None:
@@ -125,7 +236,6 @@ def _resolve_group_runs(api: wandb.Api, group: str) -> list[wandb.apis.public.Ru
         raise RuntimeError(
             f"No finished runs with config.hidden_dim found for group='{group}'"
         )
-
     return [by_hidden_dim[k] for k in sorted(by_hidden_dim)]
 
 
@@ -139,6 +249,8 @@ def _download_checkpoint_artifact(
     api: wandb.Api,
     cache_dir: str,
 ) -> str:
+    import re
+
     cache_dir = os.path.abspath(cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
     cached_ckpt = os.path.join(cache_dir, run_id, "ckpt")
@@ -147,9 +259,34 @@ def _download_checkpoint_artifact(
 
     entity, project = _wandb_entity_project()
     artifact_name = f"{entity}/{project}/checkpoint-{run_id}:latest"
-    artifact = api.artifact(artifact_name)
-    artifact_dir = artifact.download(root=os.path.join(cache_dir, run_id))
-    return os.path.join(artifact_dir, "ckpt")
+    try:
+        artifact = api.artifact(artifact_name)
+        artifact_dir = artifact.download(root=os.path.join(cache_dir, run_id))
+        return os.path.join(artifact_dir, "ckpt")
+    except Exception:
+        run = api.run(f"{WANDB_PROJECT}/{run_id}")
+        pattern = re.compile(rf"^checkpoint-{re.escape(run_id)}-epoch-(\d{{4}}):v\d+$")
+        best_artifact_name = None
+        best_epoch = -1
+        for logged_artifact in run.logged_artifacts():
+            match = pattern.match(logged_artifact.name)
+            if match is None:
+                continue
+            epoch = int(match.group(1))
+            if epoch > best_epoch:
+                best_epoch = epoch
+                best_artifact_name = logged_artifact.name
+
+        if best_artifact_name is None:
+            raise
+
+        print(
+            "Falling back to latest epoch checkpoint artifact for "
+            f"run_id={run_id}: {best_artifact_name}"
+        )
+        epoch_artifact = api.artifact(f"{WANDB_PROJECT}/{best_artifact_name}")
+        artifact_dir = epoch_artifact.download(root=os.path.join(cache_dir, run_id))
+        return os.path.join(artifact_dir, "ckpt")
 
 
 def _load_checkpoint(ckpt_path: str, state) -> tuple[Any, dict]:
@@ -179,6 +316,58 @@ def _normalize_params_for_step(params: dict, num_layers: int) -> dict:
     return normalized
 
 
+def _build_language_model_from_config(cfg: dict[str, Any]):
+    model_type = str(cfg.get("model_type", "lstm")).lower()
+    if model_type == "lstm":
+        from models.lstm import LSTMLanguageModel
+
+        return LSTMLanguageModel(
+            hidden_dim=int(cfg["hidden_dim"]),
+            num_layers=int(cfg["num_layers"]),
+            vocab_size=int(cfg["vocab_size"]),
+        )
+    if model_type == "mamba":
+        from models.mamba import MambaLanguageModel
+
+        return MambaLanguageModel(
+            hidden_dim=int(cfg["hidden_dim"]),
+            num_layers=int(cfg["num_layers"]),
+            vocab_size=int(cfg["vocab_size"]),
+            state_size=int(cfg.get("mamba_state_size", cfg.get("mamba_d_state", 16))),
+            head_dim=int(cfg.get("mamba_head_dim", 16)),
+            chunk_size=int(cfg.get("mamba_chunk_size", 256)),
+            expand=int(cfg.get("mamba_expand", 2)),
+            conv_kernel=int(cfg.get("mamba_conv_kernel", 4)),
+        )
+    if model_type == "vanilla_rnn":
+        from models.vanilla_rnn import VanillaRNNLanguageModel
+
+        return VanillaRNNLanguageModel(
+            hidden_dim=int(cfg["hidden_dim"]),
+            num_layers=int(cfg["num_layers"]),
+            vocab_size=int(cfg["vocab_size"]),
+        )
+    if model_type == "transformer":
+        from models.transformer import TransformerLanguageModel
+
+        num_heads = int(cfg.get("transformer_num_heads", 8))
+        return TransformerLanguageModel(
+            hidden_dim=int(cfg["hidden_dim"]),
+            num_layers=int(cfg["num_layers"]),
+            vocab_size=int(cfg["vocab_size"]),
+            num_heads=num_heads,
+            num_kv_heads=int(cfg.get("transformer_num_kv_heads", num_heads)),
+            ffn_mult=float(cfg.get("transformer_ffn_mult", 8.0 / 3.0)),
+            rope_theta=float(cfg.get("transformer_rope_theta", 1_000_000.0)),
+            layer_norm_epsilon=float(cfg.get("transformer_layer_norm_epsilon", 1e-6)),
+            tie_word_embeddings=bool(cfg.get("transformer_tie_word_embeddings", True)),
+        )
+    raise RuntimeError(
+        "Unsupported model_type in run config. Expected one of "
+        f"['lstm', 'mamba', 'vanilla_rnn', 'transformer'], got '{model_type}'"
+    )
+
+
 def _sample_sequences(
     model,
     params: dict,
@@ -199,7 +388,7 @@ def _sample_sequences(
         bos_token_id: int,
     ):
         def scan_step(state, _):
-            lstm_carry, logits = model.apply(
+            next_carry, logits = model.apply(
                 {"params": params},
                 state["carry"],
                 state["token"],
@@ -213,10 +402,11 @@ def _sample_sequences(
                 next_token[:, None],
                 axis=-1,
             ).squeeze(-1)
-            new_state = {"carry": lstm_carry, "token": next_token, "rng": rng}
+            new_state = {"carry": next_carry, "token": next_token, "rng": rng}
             return new_state, (next_token, token_logp)
 
-        init_token = jnp.full((init_carry[0][0].shape[0],), bos_token_id)
+        batch_size_local = int(jax.tree_util.tree_leaves(init_carry)[0].shape[0])
+        init_token = jnp.full((batch_size_local,), bos_token_id)
         carry = {"carry": init_carry, "token": init_token, "rng": batch_rng}
         _, (tokens, logps) = jax.lax.scan(scan_step, carry, jnp.arange(seq_len))
         return jnp.transpose(tokens, (1, 0)), jnp.transpose(logps, (1, 0))
@@ -320,7 +510,9 @@ def _sample_cache_key(
 
 
 def _sample_cache_paths(
-    cache_dir: str, run_id: str, sample_key: str
+    cache_dir: str,
+    run_id: str,
+    sample_key: str,
 ) -> tuple[str, str]:
     run_cache_dir = os.path.join(os.path.abspath(cache_dir), run_id)
     os.makedirs(run_cache_dir, exist_ok=True)
@@ -346,841 +538,18 @@ def _log_q_y_cache_path_for_sample_cache(sample_cache_path: str) -> str:
     )
 
 
-def _compatible_sample_cache_entries(
-    cache_dir: str,
-    run_id: str,
-    seq_len: int,
-    batch_size: int | None,
-    bos_token_id: int,
-) -> list[tuple[int, str, str]]:
-    run_cache_dir = os.path.join(os.path.abspath(cache_dir), run_id)
-    if not os.path.isdir(run_cache_dir):
-        return []
-
-    pattern = re.compile(
-        r"^samples_seq(?P<seq>\d+)_num(?P<num>\d+)_"
-        rf"samplebs(?P<samplebs>\d+)_bos{int(bos_token_id)}\.npz$"
-    )
-    entries: list[tuple[int, str, str]] = []
-    for filename in os.listdir(run_cache_dir):
-        match = pattern.match(filename)
-        if match is None:
-            continue
-        seq = int(match.group("seq"))
-        if seq < int(seq_len):
-            continue
-        samplebs = int(match.group("samplebs"))
-        if batch_size is not None and samplebs != int(batch_size):
-            continue
-        num_samples = int(match.group("num"))
-        if num_samples < 1:
-            continue
-        sample_cache_path = os.path.join(run_cache_dir, filename)
-        log_q_y_cache_path = _log_q_y_cache_path_for_sample_cache(sample_cache_path)
-        entries.append((num_samples, sample_cache_path, log_q_y_cache_path))
-    entries.sort(key=lambda item: item[0])
-    return entries
-
-
-def _find_reusable_complete_cache(
-    cache_dir: str,
-    run_id: str,
-    seq_len: int,
-    target_num_samples: int,
-    batch_size: int,
-    bos_token_id: int,
-    n_values: list[int],
-) -> tuple[np.ndarray, dict[int, float], int, str, str] | None:
-    entries = _compatible_sample_cache_entries(
-        cache_dir=cache_dir,
-        run_id=run_id,
-        seq_len=seq_len,
-        batch_size=batch_size,
-        bos_token_id=bos_token_id,
-    )
-    if not entries:
-        entries = _compatible_sample_cache_entries(
-            cache_dir=cache_dir,
-            run_id=run_id,
-            seq_len=seq_len,
-            batch_size=None,
-            bos_token_id=bos_token_id,
-        )
-    best_ge_target: tuple[np.ndarray, dict[int, float], int, str, str] | None = None
-    best_any: tuple[np.ndarray, dict[int, float], int, str, str] | None = None
-    for parsed_num_samples, sample_cache_path, log_q_y_cache_path in entries:
-        log_q_y_means_by_n = _load_log_q_y_mean_cache(log_q_y_cache_path)
-        sample_logps = _load_sample_logps(sample_cache_path)
-        if sample_logps is None:
-            continue
-        actual_num_samples = int(sample_logps.shape[0])
-        if actual_num_samples < 1:
-            continue
-        available_n_values = _select_cached_n_values(
-            n_values,
-            log_q_y_means_by_n,
-            sample_logps,
-        )
-        if not available_n_values:
-            continue
-        candidate = (
-            sample_logps,
-            log_q_y_means_by_n,
-            actual_num_samples,
-            sample_cache_path,
-            log_q_y_cache_path,
-        )
-        if best_any is None or actual_num_samples > best_any[2]:
-            best_any = candidate
-        if actual_num_samples >= int(target_num_samples):
-            if best_ge_target is None or actual_num_samples > best_ge_target[2]:
-                best_ge_target = candidate
-    if best_ge_target is not None:
-        return best_ge_target
-    return best_any
-
-
-def _incremental_sample_cache_path(
+def _estimator_cache_path_for_sample_cache(
     sample_cache_path: str,
-    existing_num_samples: int,
-    target_num_samples: int,
+    estimator: str,
 ) -> str:
-    root, ext = os.path.splitext(sample_cache_path)
-    return (
-        f"{root}_from{int(existing_num_samples)}_to{int(target_num_samples)}"
-        f"{ext or '.npz'}"
+    sample_key = _sample_key_from_sample_cache_path(sample_cache_path)
+    if sample_key is None:
+        raise RuntimeError(f"Invalid sample cache filename: {sample_cache_path}")
+    safe_estimator = estimator.replace("-", "")
+    return os.path.join(
+        os.path.dirname(sample_cache_path),
+        f"{safe_estimator}_{sample_key}.npz",
     )
-
-
-def _hf_cache_id(model_name: str, revision: str | None) -> str:
-    payload = f"{model_name}@{revision or 'main'}"
-    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
-    safe_model = "".join(ch if ch.isalnum() else "_" for ch in model_name)
-    safe_revision = (
-        "main"
-        if revision is None
-        else "".join(ch if ch.isalnum() else "_" for ch in revision)
-    )
-    return f"hf_{safe_model}_{safe_revision}_{digest}"
-
-
-def _resolve_hf_bos_and_max_positions(
-    model_name: str,
-    revision: str | None,
-) -> tuple[int, int]:
-    from transformers import AutoConfig, AutoTokenizer
-
-    config = AutoConfig.from_pretrained(model_name, revision=revision)
-    max_positions = getattr(config, "n_positions", None)
-    if max_positions is None:
-        max_positions = getattr(config, "max_position_embeddings", None)
-    if max_positions is None:
-        max_positions = getattr(config, "n_ctx", None)
-    if max_positions is None:
-        raise RuntimeError(
-            "Failed to determine context length from HF config for "
-            f"model='{model_name}'"
-        )
-
-    bos_token_id = getattr(config, "bos_token_id", None)
-    if bos_token_id is None:
-        bos_token_id = getattr(config, "eos_token_id", None)
-    if bos_token_id is None:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
-        bos_token_id = tokenizer.bos_token_id
-        if bos_token_id is None:
-            bos_token_id = tokenizer.eos_token_id
-    if bos_token_id is None:
-        raise RuntimeError(
-            "Failed to determine bos_token_id for HF model " f"'{model_name}'"
-        )
-
-    return int(bos_token_id), int(max_positions)
-
-
-def _is_torch_oom_error(exc: RuntimeError) -> bool:
-    message = str(exc).lower()
-    return "out of memory" in message or "cublas_status_alloc_failed" in message
-
-
-def _is_hf_compile_runtime_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    indicators = (
-        "inductorerror",
-        "torch._inductor",
-        "torch._dynamo",
-        "triton",
-        "cudagraph",
-        "python.h",
-        "cuda_utils.c",
-    )
-    return any(indicator in message for indicator in indicators)
-
-
-def _mark_cudagraph_step_begin(torch) -> None:
-    compiler = getattr(torch, "compiler", None)
-    if compiler is None:
-        return
-    marker = getattr(compiler, "cudagraph_mark_step_begin", None)
-    if marker is None:
-        return
-    marker()
-
-
-def _torch_autocast_context(torch, device, dtype):
-    if device.type != "cuda" or dtype is None:
-        return contextlib.nullcontext()
-    return torch.autocast(device_type="cuda", dtype=dtype)
-
-
-def _hf_partial_sample_paths(sample_cache_path: str) -> tuple[str, str, str, str]:
-    partial_dir = f"{sample_cache_path}.partial"
-    samples_mm_path = os.path.join(partial_dir, "samples.memmap")
-    sample_logps_mm_path = os.path.join(partial_dir, "sample_logps.memmap")
-    meta_path = os.path.join(partial_dir, "meta.npz")
-    return partial_dir, samples_mm_path, sample_logps_mm_path, meta_path
-
-
-def _save_hf_partial_meta(
-    meta_path: str,
-    num_samples: int,
-    seq_len: int,
-    completed: int,
-) -> None:
-    tmp_meta_path = f"{meta_path}.tmp.npz"
-    np.savez(
-        tmp_meta_path,
-        num_samples=np.array(int(num_samples), dtype=np.int64),
-        seq_len=np.array(int(seq_len), dtype=np.int64),
-        completed=np.array(int(completed), dtype=np.int64),
-    )
-    os.replace(tmp_meta_path, meta_path)
-
-
-def _load_or_init_hf_partial_samples(
-    sample_cache_path: str,
-    num_samples: int,
-    seq_len: int,
-) -> tuple[np.memmap, np.memmap, int, str, str]:
-    partial_dir, samples_mm_path, sample_logps_mm_path, meta_path = (
-        _hf_partial_sample_paths(
-            sample_cache_path,
-        )
-    )
-    os.makedirs(partial_dir, exist_ok=True)
-
-    expected_samples_bytes = (
-        int(num_samples) * int(seq_len) * np.dtype(np.int32).itemsize
-    )
-    expected_logps_bytes = (
-        int(num_samples) * int(seq_len) * np.dtype(np.float32).itemsize
-    )
-
-    resume = (
-        os.path.exists(meta_path)
-        and os.path.exists(samples_mm_path)
-        and os.path.exists(sample_logps_mm_path)
-        and os.path.getsize(samples_mm_path) == expected_samples_bytes
-        and os.path.getsize(sample_logps_mm_path) == expected_logps_bytes
-    )
-
-    completed = 0
-    if resume:
-        try:
-            with np.load(meta_path) as meta:
-                meta_num_samples = int(meta.get("num_samples", -1))
-                meta_seq_len = int(meta.get("seq_len", -1))
-                meta_completed = int(meta.get("completed", 0))
-            if meta_num_samples != int(num_samples) or meta_seq_len != int(seq_len):
-                resume = False
-            else:
-                completed = max(0, min(int(num_samples), meta_completed))
-        except Exception:
-            resume = False
-
-    if not resume:
-        for path in (meta_path, samples_mm_path, sample_logps_mm_path):
-            if os.path.exists(path):
-                os.remove(path)
-
-    mode = "r+" if resume else "w+"
-    samples_mm = np.memmap(
-        samples_mm_path,
-        dtype=np.int32,
-        mode=mode,
-        shape=(int(num_samples), int(seq_len)),
-    )
-    sample_logps_mm = np.memmap(
-        sample_logps_mm_path,
-        dtype=np.float32,
-        mode=mode,
-        shape=(int(num_samples), int(seq_len)),
-    )
-    if not resume:
-        _save_hf_partial_meta(meta_path, num_samples, seq_len, completed=0)
-    else:
-        print(
-            "Resuming partial HF samples: "
-            f"{completed}/{num_samples} sequences already cached"
-        )
-
-    return samples_mm, sample_logps_mm, completed, partial_dir, meta_path
-
-
-def _cleanup_hf_partial_samples(sample_cache_path: str) -> None:
-    partial_dir, *_ = _hf_partial_sample_paths(sample_cache_path)
-    if os.path.exists(partial_dir):
-        shutil.rmtree(partial_dir, ignore_errors=True)
-
-
-def _maybe_compile_hf_model(
-    model,
-    torch,
-    compile_mode: str,
-    *,
-    enabled: bool,
-    compile_for: str,
-):
-    if not enabled:
-        return model
-    if not hasattr(torch, "compile"):
-        print("torch.compile unavailable; continuing without compilation")
-        return model
-    try:
-        compiled_model = torch.compile(
-            model,
-            mode=compile_mode,
-            options={"triton.cudagraphs": False},
-        )
-        print(
-            f"Enabled torch.compile for HF {compile_for} path "
-            f"(mode={compile_mode}, cudagraphs_disabled=True)"
-        )
-        return compiled_model
-    except Exception as exc:
-        try:
-            compiled_model = torch.compile(model, mode=compile_mode)
-            print(
-                f"Enabled torch.compile for HF {compile_for} path "
-                f"(mode={compile_mode}, default_options)"
-            )
-            return compiled_model
-        except Exception as exc_fallback:
-            print(
-                f"torch.compile failed for HF {compile_for} path; "
-                f"continuing without compile. "
-                f"Error with cudagraphs disabled: {exc}; "
-                f"error with default options: {exc_fallback}"
-            )
-            return model
-
-
-def _load_hf_torch_model(
-    model_name: str,
-    revision: str | None,
-    attn_implementation: str | None,
-):
-    try:
-        import torch
-    except ImportError as exc:
-        raise RuntimeError(
-            "PyTorch is required for --hf-model. Install it in .venv first."
-        ) from exc
-
-    from transformers import AutoModelForCausalLM
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.float16 if device.type == "cuda" else torch.float32
-
-    if device.type == "cpu":
-        print(
-            "Warning: torch.cuda.is_available() is False; HF sampling/scoring "
-            "will run on CPU and be very slow."
-        )
-
-    if device.type == "cuda":
-        if hasattr(torch, "set_float32_matmul_precision"):
-            torch.set_float32_matmul_precision("high")
-        if hasattr(torch.backends.cuda.matmul, "allow_tf32"):
-            torch.backends.cuda.matmul.allow_tf32 = True
-        if hasattr(torch.backends.cudnn, "allow_tf32"):
-            torch.backends.cudnn.allow_tf32 = True
-        if hasattr(torch.backends.cuda, "enable_flash_sdp"):
-            torch.backends.cuda.enable_flash_sdp(True)
-        if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
-            torch.backends.cuda.enable_mem_efficient_sdp(True)
-
-    load_kwargs: dict[str, Any] = {
-        "revision": revision,
-        "torch_dtype": dtype,
-    }
-    if device.type == "cuda" and attn_implementation is not None:
-        load_kwargs["attn_implementation"] = attn_implementation
-
-    try:
-        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
-    except Exception as exc:
-        if "attn_implementation" not in str(exc):
-            raise
-        load_kwargs.pop("attn_implementation", None)
-        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
-
-    model.to(device)
-    model.eval()
-
-    param_dtype = None
-    try:
-        param_dtype = next(model.parameters()).dtype
-    except StopIteration:
-        param_dtype = dtype
-
-    autocast_dtype = param_dtype if device.type == "cuda" else None
-    print(
-        "HF model loaded on "
-        f"device={device}, param_dtype={param_dtype}, "
-        f"attn_impl={attn_implementation or 'default'}"
-    )
-    return model, torch, device, autocast_dtype
-
-
-def _sample_single_hf_batch(
-    model,
-    torch,
-    device,
-    seq_len: int,
-    batch_size: int,
-    bos_token_id: int,
-    autocast_dtype,
-    token_progress,
-    token_log_every: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    input_ids = torch.full(
-        (batch_size, 1),
-        bos_token_id,
-        dtype=torch.long,
-        device=device,
-    )
-    tokens = torch.empty((batch_size, seq_len), dtype=torch.long, device=device)
-    token_logps = torch.empty((batch_size, seq_len), dtype=torch.float32, device=device)
-    past_key_values = None
-    pending_steps = 0
-    with torch.inference_mode():
-        with _torch_autocast_context(torch, device, autocast_dtype):
-            for step in range(seq_len):
-                _mark_cudagraph_step_begin(torch)
-                outputs = model(
-                    input_ids=input_ids,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                )
-                logits = outputs.logits[:, -1, :]
-                past_key_values = outputs.past_key_values
-
-                log_probs = torch.log_softmax(logits, dim=-1)
-                probs = torch.exp(log_probs)
-                next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
-                logp = torch.gather(log_probs, 1, next_token[:, None]).squeeze(1)
-
-                tokens[:, step] = next_token
-                token_logps[:, step] = logp
-                input_ids = next_token[:, None]
-
-                pending_steps += 1
-                if token_progress is not None and (
-                    (step + 1) % token_log_every == 0 or (step + 1) == seq_len
-                ):
-                    token_progress.update(pending_steps)
-                    pending_steps = 0
-
-    return (
-        tokens.cpu().numpy().astype(np.int32, copy=False),
-        token_logps.cpu().numpy().astype(np.float32, copy=False),
-    )
-
-
-def _sample_sequences_hf(
-    model,
-    torch,
-    device,
-    seq_len: int,
-    num_samples: int,
-    batch_size: int,
-    bos_token_id: int,
-    seed: int,
-    progress_desc: str,
-    sample_cache_path: str,
-    autocast_dtype,
-    save_every_batches: int = DEFAULT_HF_SAVE_EVERY_BATCHES,
-    token_log_every: int = 1,
-    sample_progress: Any | None = None,
-    show_token_progress: bool = True,
-    on_sampled_batch: Callable[[np.ndarray, np.ndarray], None] | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    if save_every_batches < 1:
-        raise RuntimeError("save_every_batches must be >= 1")
-    if token_log_every < 1:
-        raise RuntimeError("token_log_every must be >= 1")
-
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    samples_mm, sample_logps_mm, completed, _, meta_path = (
-        _load_or_init_hf_partial_samples(
-            sample_cache_path=sample_cache_path,
-            num_samples=num_samples,
-            seq_len=seq_len,
-        )
-    )
-
-    active_batch_size = max(1, int(batch_size))
-    batch_counter = 0
-    owns_progress = sample_progress is None
-    if sample_progress is None:
-        sample_progress = tqdm(
-            total=int(num_samples),
-            initial=int(completed),
-            desc=progress_desc,
-            unit="sample",
-            leave=False,
-        )
-
-    try:
-        while completed < num_samples:
-            current_batch_size = min(active_batch_size, num_samples - completed)
-            start_time = time.perf_counter()
-            token_progress = (
-                tqdm(
-                    total=seq_len,
-                    desc=f"{progress_desc} token-steps",
-                    unit="tok",
-                    leave=False,
-                )
-                if show_token_progress
-                else None
-            )
-            try:
-                batch_tokens, batch_logps = _sample_single_hf_batch(
-                    model=model,
-                    torch=torch,
-                    device=device,
-                    seq_len=seq_len,
-                    batch_size=current_batch_size,
-                    bos_token_id=bos_token_id,
-                    autocast_dtype=autocast_dtype,
-                    token_progress=token_progress,
-                    token_log_every=token_log_every,
-                )
-            except RuntimeError as exc:
-                if not _is_torch_oom_error(exc) or current_batch_size <= 1:
-                    raise
-                new_batch_size = max(1, current_batch_size // 2)
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
-                print(
-                    "HF sampling OOM at batch_size="
-                    f"{current_batch_size}; retrying with batch_size={new_batch_size}"
-                )
-                active_batch_size = new_batch_size
-                continue
-            finally:
-                if token_progress is not None:
-                    token_progress.close()
-
-            if on_sampled_batch is not None:
-                on_sampled_batch(batch_tokens, batch_logps)
-
-            end = completed + current_batch_size
-            samples_mm[completed:end] = batch_tokens
-            sample_logps_mm[completed:end] = batch_logps
-            completed = end
-            batch_counter += 1
-            sample_progress.update(current_batch_size)
-
-            elapsed = max(time.perf_counter() - start_time, 1e-8)
-            tokens_per_second = float(current_batch_size * seq_len) / elapsed
-            samples_per_second = float(current_batch_size) / elapsed
-            sample_progress.set_postfix(
-                sample_bs=current_batch_size,
-                sample_s=f"{samples_per_second:,.2f}",
-                tok_s=f"{tokens_per_second:,.0f}",
-            )
-
-            if batch_counter % save_every_batches == 0 or completed == num_samples:
-                samples_mm.flush()
-                sample_logps_mm.flush()
-                _save_hf_partial_meta(meta_path, num_samples, seq_len, completed)
-    finally:
-        if owns_progress:
-            sample_progress.close()
-
-    samples = np.array(samples_mm, copy=True)
-    sample_logps = np.array(sample_logps_mm, copy=True)
-    del samples_mm
-    del sample_logps_mm
-
-    _save_sample_cache(sample_cache_path, samples, sample_logps)
-    _cleanup_hf_partial_samples(sample_cache_path)
-    return samples, sample_logps
-
-
-def _score_logps_hf(
-    model,
-    torch,
-    device,
-    tokens: np.ndarray,
-    batch_size: int,
-    bos_token_id: int,
-    progress_desc: str | None,
-    autocast_dtype,
-    show_progress: bool = True,
-) -> np.ndarray:
-    num_tokens = int(tokens.shape[0])
-    if num_tokens == 0:
-        seq_len = int(tokens.shape[1])
-        return np.empty((0, seq_len), dtype=np.float32)
-
-    seq_len = int(tokens.shape[1])
-    all_logps = np.empty((num_tokens, seq_len), dtype=np.float32)
-    active_batch_size = max(1, min(int(batch_size), num_tokens))
-    start = 0
-
-    use_progress = bool(show_progress and progress_desc is not None)
-    sample_progress = (
-        tqdm(
-            total=num_tokens,
-            desc=progress_desc,
-            unit="sample",
-            leave=False,
-        )
-        if use_progress
-        else None
-    )
-    try:
-        while start < num_tokens:
-            current_batch_size = min(active_batch_size, num_tokens - start)
-            batch_np = tokens[start : start + current_batch_size]
-            batch = torch.as_tensor(batch_np, dtype=torch.long, device=device)
-            bos = torch.full(
-                (current_batch_size, 1),
-                bos_token_id,
-                dtype=torch.long,
-                device=device,
-            )
-            inputs = torch.cat([bos, batch[:, :-1]], dim=1)
-
-            step_start = time.perf_counter()
-            try:
-                with torch.inference_mode():
-                    with _torch_autocast_context(torch, device, autocast_dtype):
-                        _mark_cudagraph_step_begin(torch)
-                        logits = model(input_ids=inputs, use_cache=False).logits
-                    log_probs = torch.log_softmax(logits, dim=-1)
-                    token_logp = torch.gather(
-                        log_probs,
-                        2,
-                        batch.unsqueeze(-1),
-                    ).squeeze(-1)
-            except RuntimeError as exc:
-                if not _is_torch_oom_error(exc) or current_batch_size <= 1:
-                    raise
-                new_batch_size = max(1, current_batch_size // 2)
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
-                print(
-                    "HF scoring OOM at batch_size="
-                    f"{current_batch_size}; retrying with batch_size={new_batch_size}"
-                )
-                active_batch_size = new_batch_size
-                continue
-
-            all_logps[start : start + current_batch_size] = (
-                token_logp.cpu().numpy().astype(np.float32, copy=False)
-            )
-            start += current_batch_size
-
-            elapsed = max(time.perf_counter() - step_start, 1e-8)
-            tokens_per_second = float(current_batch_size * seq_len) / elapsed
-            if sample_progress is not None:
-                sample_progress.update(current_batch_size)
-                sample_progress.set_postfix(
-                    score_bs=current_batch_size,
-                    tok_s=f"{tokens_per_second:,.0f}",
-                )
-    finally:
-        if sample_progress is not None:
-            sample_progress.close()
-
-    return all_logps
-
-
-def _accumulate_log_q_y_sums_hf(
-    tokens: np.ndarray,
-    n_values: list[int],
-    model,
-    torch,
-    device,
-    batch_size: int,
-    bos_token_id: int,
-    autocast_dtype,
-    sums_by_n: dict[int, float],
-) -> None:
-    for n in n_values:
-        half = n // 2
-        y_tokens = tokens[:, half:n]
-        y_logps = _score_logps_hf(
-            model=model,
-            torch=torch,
-            device=device,
-            tokens=y_tokens,
-            batch_size=batch_size,
-            bos_token_id=bos_token_id,
-            progress_desc=None,
-            autocast_dtype=autocast_dtype,
-            show_progress=False,
-        )
-        sums_by_n[n] += float(np.sum(y_logps, dtype=np.float64))
-
-
-def _sample_and_score_hf_in_succession(
-    sample_model,
-    score_model,
-    torch,
-    device,
-    seq_len: int,
-    target_num_samples: int,
-    n_values: list[int],
-    sample_batch_size: int,
-    score_batch_size: int,
-    bos_token_id: int,
-    seed: int,
-    sample_cache_path: str,
-    autocast_dtype,
-    save_every_batches: int,
-    token_log_every: int,
-    progress_desc: str,
-    existing_samples: np.ndarray | None = None,
-    existing_sample_logps: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, dict[int, float]]:
-    cached_count = 0
-    if existing_samples is not None and existing_sample_logps is not None:
-        cached_count = min(
-            int(existing_samples.shape[0]), int(existing_sample_logps.shape[0])
-        )
-        if cached_count > 0:
-            existing_samples = existing_samples[:cached_count]
-            existing_sample_logps = existing_sample_logps[:cached_count]
-
-    if cached_count > int(target_num_samples):
-        cached_count = int(target_num_samples)
-        if existing_samples is not None and existing_sample_logps is not None:
-            existing_samples = existing_samples[:cached_count]
-            existing_sample_logps = existing_sample_logps[:cached_count]
-
-    missing_sample_count = max(0, int(target_num_samples) - cached_count)
-    sums_by_n = {int(n): 0.0 for n in n_values}
-
-    progress = tqdm(
-        total=int(target_num_samples),
-        desc=progress_desc,
-        unit="sample",
-        leave=False,
-    )
-    try:
-        if cached_count > 0 and existing_samples is not None:
-            start = 0
-            while start < cached_count:
-                end = min(start + int(score_batch_size), cached_count)
-                batch_tokens = existing_samples[start:end]
-                _accumulate_log_q_y_sums_hf(
-                    tokens=batch_tokens,
-                    n_values=n_values,
-                    model=score_model,
-                    torch=torch,
-                    device=device,
-                    batch_size=score_batch_size,
-                    bos_token_id=bos_token_id,
-                    autocast_dtype=autocast_dtype,
-                    sums_by_n=sums_by_n,
-                )
-                batch_size = end - start
-                progress.update(batch_size)
-                progress.set_postfix(stage="score", bs=batch_size)
-                start = end
-
-        new_samples = np.empty((0, int(seq_len)), dtype=np.int32)
-        new_sample_logps = np.empty((0, int(seq_len)), dtype=np.float32)
-        if missing_sample_count > 0:
-            incremental_sample_cache_path = _incremental_sample_cache_path(
-                sample_cache_path=sample_cache_path,
-                existing_num_samples=cached_count,
-                target_num_samples=target_num_samples,
-            )
-            if os.path.exists(incremental_sample_cache_path):
-                os.remove(incremental_sample_cache_path)
-            _cleanup_hf_partial_samples(incremental_sample_cache_path)
-
-            def _on_sampled_batch(
-                batch_tokens: np.ndarray, batch_logps: np.ndarray
-            ) -> None:
-                del batch_logps
-                _accumulate_log_q_y_sums_hf(
-                    tokens=batch_tokens,
-                    n_values=n_values,
-                    model=score_model,
-                    torch=torch,
-                    device=device,
-                    batch_size=score_batch_size,
-                    bos_token_id=bos_token_id,
-                    autocast_dtype=autocast_dtype,
-                    sums_by_n=sums_by_n,
-                )
-
-            new_samples, new_sample_logps = _sample_sequences_hf(
-                model=sample_model,
-                torch=torch,
-                device=device,
-                seq_len=seq_len,
-                num_samples=missing_sample_count,
-                batch_size=sample_batch_size,
-                bos_token_id=bos_token_id,
-                seed=int(seed) + int(cached_count),
-                progress_desc=progress_desc,
-                sample_cache_path=incremental_sample_cache_path,
-                autocast_dtype=autocast_dtype,
-                save_every_batches=save_every_batches,
-                token_log_every=token_log_every,
-                sample_progress=progress,
-                show_token_progress=False,
-                on_sampled_batch=_on_sampled_batch,
-            )
-            progress.set_postfix(stage="sample+score", bs=int(sample_batch_size))
-
-        if (
-            existing_samples is None
-            or existing_sample_logps is None
-            or cached_count == 0
-        ):
-            samples = new_samples
-            sample_logps = new_sample_logps
-        else:
-            samples = np.concatenate([existing_samples, new_samples], axis=0)
-            sample_logps = np.concatenate(
-                [existing_sample_logps, new_sample_logps], axis=0
-            )
-
-        _save_sample_cache(sample_cache_path, samples, sample_logps)
-    finally:
-        progress.close()
-
-    if samples.shape[0] == 0:
-        raise RuntimeError("No HF samples available after sampling/scoring")
-
-    denominator = float(samples.shape[0])
-    log_q_y_means_by_n = {
-        int(n): float(sums_by_n[int(n)] / denominator) for n in n_values
-    }
-    return samples, sample_logps, log_q_y_means_by_n
 
 
 def _load_sample_cache(sample_cache_path: str) -> tuple[np.ndarray, np.ndarray] | None:
@@ -1255,846 +624,36 @@ def _save_log_q_y_mean_cache(
     )
 
 
-def _compute_log_q_y_means(
-    samples,
-    apply_fn,
-    params: dict,
-    n_values: list[int],
-    batch_size: int,
-    bos_token_id: int,
-    progress_desc_prefix: str,
-) -> dict[int, float]:
-    out: dict[int, float] = {}
-    for n in n_values:
-        half = n // 2
-        y_tokens = samples[:, half:n]
-        y_logps = _score_logps(
-            apply_fn=apply_fn,
-            params=params,
-            tokens=y_tokens,
-            batch_size=batch_size,
-            bos_token_id=bos_token_id,
-            progress_desc=f"{progress_desc_prefix} N={n}",
-        )
-        out[n] = float(np.mean(np.sum(y_logps, axis=1)))
-    return out
-
-
-def _extract_conditional_entropy(run: wandb.apis.public.Run) -> dict[int, float]:
-    out: dict[int, float] = {}
-
-    summary = run.summary or {}
-    for key, value in summary.items():
-        if not str(key).startswith("conditional_entropy/entropy_"):
-            continue
-        try:
-            n = int(str(key).rsplit("_", 1)[1])
-            val = float(value)
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(val):
-            out[n] = val
-
-    if out:
-        return out
-
-    history = run.history()
-    if history is None or history.empty:
-        return out
-    keys = [k for k in history.columns if k.startswith("conditional_entropy/entropy_")]
-    if not keys:
-        return out
-
-    valid = history[keys].dropna(how="all")
-    if valid.empty:
-        return out
-
-    last_row = valid.iloc[-1]
-    for key in keys:
-        value = last_row.get(key)
-        try:
-            n = int(str(key).rsplit("_", 1)[1])
-            val = float(value)
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(val):
-            out[n] = val
-    return out
-
-
-def _compute_bipartite_mi_from_conditional_entropy(
-    conditional_entropy: dict[int, float],
-    n_values: list[int],
-) -> dict[int, float]:
-    if not conditional_entropy:
+def _load_estimator_cache(estimator_cache_path: str) -> dict[int, float]:
+    if not os.path.exists(estimator_cache_path):
         return {}
-
-    max_n = max(conditional_entropy)
-    entropy = np.array(
-        [conditional_entropy.get(i, np.nan) for i in range(1, max_n + 1)],
-        dtype=float,
-    )
-    cumsum = np.cumsum(entropy)
-
+    with np.load(estimator_cache_path) as data:
+        if "n_values" not in data or "values" not in data:
+            return {}
+        n_values = np.array(data["n_values"])
+        values = np.array(data["values"])
+    if len(n_values) != len(values):
+        return {}
     out: dict[int, float] = {}
-    for n in n_values:
-        if n < 1 or n > max_n:
-            continue
-        half = n // 2
-        if half < 1:
-            continue
-        s_ab = float(cumsum[n - 1])
-        s_a = float(cumsum[half - 1])
-        if np.isfinite(s_ab) and np.isfinite(s_a):
-            out[n] = 2.0 * s_a - s_ab
+    for n, value in zip(n_values, values):
+        n_int = int(n)
+        value_float = float(value)
+        if np.isfinite(value_float):
+            out[n_int] = value_float
     return out
 
 
-def _compute_bipartite_mi_from_sampled_q(
-    sample_logps: np.ndarray,
-    n_values: list[int],
-    log_q_y_means_by_n: dict[int, float],
-) -> dict[int, float]:
-    sample_logps_cumsum = np.cumsum(sample_logps, axis=1)
-
-    out: dict[int, float] = {}
-    for n in n_values:
-        if n not in log_q_y_means_by_n:
-            raise RuntimeError(f"Missing cached log q(y) for N={n}")
-        half = n // 2
-        log_q_y_given_x = np.mean(
-            sample_logps_cumsum[:, n - 1] - sample_logps_cumsum[:, half - 1]
-        )
-        out[n] = float(log_q_y_given_x - log_q_y_means_by_n[n])
-    return out
-
-
-def _compute_ckl_from_samples(
-    samples: np.ndarray,
-    sample_logps: np.ndarray,
-    n_values: list[int],
-    apply_fn,
-    params: dict,
-    batch_size: int,
-    bos_token_id: int,
-    rng: np.random.Generator | None = None,
-) -> dict[int, float]:
-    if rng is None:
-        rng = np.random.default_rng(0)
-    num_samples = sample_logps.shape[0]
-    if num_samples < 2:
-        raise RuntimeError("Need at least 2 samples for CKL estimator")
-    idx_x = rng.choice(num_samples, size=num_samples, replace=True)
-    idx_x_prime = rng.choice(num_samples, size=num_samples, replace=True)
-    out: dict[int, float] = {}
-    max_n = max(n_values)
-    half_max = max_n // 2
-
-    x_prime_tokens = samples[idx_x_prime, :half_max]
-    y_tokens = samples[idx_x, half_max:max_n]
-    cross_seq = np.concatenate([x_prime_tokens, y_tokens], axis=1)
-    cross_logps = _score_logps(
-        apply_fn=apply_fn,
-        params=params,
-        tokens=cross_seq,
-        batch_size=batch_size,
-        bos_token_id=bos_token_id,
-        progress_desc="Scoring CKL cross (x' + y)",
-    )
-
-    for n in n_values:
-        half = n // 2
-        if half < 1:
-            continue
-        logp_y_given_x = np.sum(sample_logps[idx_x, half:n], axis=1)
-        logp_y_given_x_prime = np.sum(cross_logps[:, half:n], axis=1)
-        ckl_estimates = logp_y_given_x - logp_y_given_x_prime
-        out[n] = float(np.mean(ckl_estimates))
-    return out
-
-
-def _compute_cjs_from_samples(
-    samples: np.ndarray,
-    sample_logps: np.ndarray,
-    n_values: list[int],
-    apply_fn,
-    params: dict,
-    batch_size: int,
-    bos_token_id: int,
-    rng: np.random.Generator | None = None,
-) -> dict[int, float]:
-    if rng is None:
-        rng = np.random.default_rng(0)
-    num_samples = sample_logps.shape[0]
-    if num_samples < 2:
-        raise RuntimeError("Need at least 2 samples for CJS estimator")
-    idx_x = rng.choice(num_samples, size=num_samples, replace=True)
-    idx_x_prime = rng.choice(num_samples, size=num_samples, replace=True)
-    out: dict[int, float] = {}
-    max_n = max(n_values)
-    half_max = max_n // 2
-
-    x_prime_tokens = samples[idx_x_prime, :half_max]
-    y_tokens = samples[idx_x, half_max:max_n]
-    cross1 = np.concatenate([x_prime_tokens, y_tokens], axis=1)
-    cross1_logps = _score_logps(
-        apply_fn=apply_fn,
-        params=params,
-        tokens=cross1,
-        batch_size=batch_size,
-        bos_token_id=bos_token_id,
-        progress_desc="Scoring CJS cross 1 (x' + y)",
-    )
-
-    x_tokens = samples[idx_x, :half_max]
-    y_prime_tokens = samples[idx_x_prime, half_max:max_n]
-    cross2 = np.concatenate([x_tokens, y_prime_tokens], axis=1)
-    cross2_logps = _score_logps(
-        apply_fn=apply_fn,
-        params=params,
-        tokens=cross2,
-        batch_size=batch_size,
-        bos_token_id=bos_token_id,
-        progress_desc="Scoring CJS cross 2 (x + y')",
-    )
-
-    for n in n_values:
-        half = n // 2
-        if half < 1:
-            continue
-        logp_y_given_x = np.sum(sample_logps[idx_x, half:n], axis=1, keepdims=True)
-        logp_y_given_x_prime = np.sum(cross1_logps[:, half:n], axis=1, keepdims=True)
-        p = np.exp(logp_y_given_x)
-        q = np.exp(logp_y_given_x_prime)
-        mixture = 0.5 * (p + q)
-        term1 = np.log(2.0) + logp_y_given_x - np.log(mixture)
-
-        logp_y_prime_given_x_prime = np.sum(sample_logps[idx_x_prime, half:n], axis=1, keepdims=True)
-        logp_y_prime_given_x = np.sum(cross2_logps[:, half:n], axis=1, keepdims=True)
-        p_prime = np.exp(logp_y_prime_given_x_prime)
-        q_prime = np.exp(logp_y_prime_given_x)
-        mixture_prime = 0.5 * (p_prime + q_prime)
-        term2 = np.log(2.0) + logp_y_prime_given_x_prime - np.log(mixture_prime)
-
-        js_estimates = 0.5 * term1 + 0.5 * term2
-        out[n] = float(np.mean(js_estimates))
-    return out
-
-
-def _compute_hf_sampled_mi_series(
-    model_name: str,
-    revision: str | None,
-    n_values: list[int],
-    num_samples: int,
-    sample_batch_size: int,
-    score_batch_size: int,
-    cache_dir: str,
-    seed: int,
-    save_every_batches: int,
-    token_log_every: int,
-    compile_target: str,
-    compile_mode: str,
-    attn_implementation: str | None,
-    force_resample: bool = False,
-) -> tuple[dict[int, float], int]:
-    bos_token_id, max_positions = _resolve_hf_bos_and_max_positions(
-        model_name,
-        revision,
-    )
-
-    capped_n_values = [n for n in n_values if n <= max_positions]
-    if not capped_n_values:
-        raise RuntimeError(
-            f"No N values are <= context limit ({max_positions}) for "
-            f"HF model '{model_name}'"
-        )
-
-    sample_key = _sample_cache_key(
-        seq_len=capped_n_values[-1],
-        num_samples=num_samples,
-        batch_size=sample_batch_size,
-        bos_token_id=bos_token_id,
-    )
-    hf_cache_id = _hf_cache_id(model_name, revision)
-    sample_cache_path, log_q_y_cache_path = _sample_cache_paths(
-        cache_dir,
-        hf_cache_id,
-        sample_key,
-    )
-
-    if not force_resample:
-        reusable_cache = _find_reusable_complete_cache(
-            cache_dir=cache_dir,
-            run_id=hf_cache_id,
-            seq_len=capped_n_values[-1],
-            target_num_samples=num_samples,
-            batch_size=sample_batch_size,
-            bos_token_id=bos_token_id,
-            n_values=capped_n_values,
-        )
-        if reusable_cache is None:
-            raise RuntimeError(
-                "No complete cached HF sampled MI found for "
-                f"model='{model_name}'. Re-run with --force-resample to regenerate."
-            )
-        (
-            reusable_sample_logps,
-            reusable_log_q_y_means_by_n,
-            reusable_num_samples,
-            reusable_sample_cache_path,
-            _,
-        ) = reusable_cache
-        available_n_values = _select_cached_n_values(
-            capped_n_values,
-            reusable_log_q_y_means_by_n,
-            reusable_sample_logps,
-        )
-        if not available_n_values:
-            raise RuntimeError(
-                "Cached HF sampled artifacts have no usable N values for plotting. "
-                "Re-run with --force-resample to regenerate."
-            )
-        if len(available_n_values) < len(capped_n_values):
-            print(
-                "Using cached HF sampled MI subset: "
-                f"{len(available_n_values)}/{len(capped_n_values)} N values available"
-            )
-        print(
-            "Using cached sampled MI for hf_model="
-            f"{model_name} from {os.path.basename(reusable_sample_cache_path)} "
-            f"(num_samples={reusable_num_samples}, requested={num_samples})"
-        )
-        mi_values = _compute_bipartite_mi_from_sampled_q(
-            sample_logps=reusable_sample_logps,
-            n_values=available_n_values,
-            log_q_y_means_by_n=reusable_log_q_y_means_by_n,
-        )
-        return mi_values, max_positions
-
-    print(
-        "Force resample enabled for hf_model="
-        f"{model_name}; regenerating sampled cache"
-    )
-    if os.path.exists(sample_cache_path):
-        os.remove(sample_cache_path)
-    if os.path.exists(log_q_y_cache_path):
-        os.remove(log_q_y_cache_path)
-    _cleanup_hf_partial_samples(sample_cache_path)
-
-    model = None
-    torch_module = None
-    device = None
-    autocast_dtype = None
-    eager_model = None
-    sample_model = None
-    score_model = None
-    sample_compiled = False
-    score_compiled = False
-    samples: np.ndarray | None = None
-    sample_logps: np.ndarray | None = None
-    log_q_y_means_by_n: dict[int, float] = {}
-    try:
-        model, torch_module, device, autocast_dtype = _load_hf_torch_model(
-            model_name,
-            revision,
-            attn_implementation,
-        )
-        eager_model = model
-
-        sample_model = eager_model
-        if compile_target in {"sample", "both"}:
-            sample_model = _maybe_compile_hf_model(
-                eager_model,
-                torch_module,
-                compile_mode,
-                enabled=True,
-                compile_for="sampling",
-            )
-            sample_compiled = sample_model is not eager_model
-
-        score_model = eager_model
-        if compile_target in {"score", "both"}:
-            score_model = _maybe_compile_hf_model(
-                eager_model,
-                torch_module,
-                compile_mode,
-                enabled=True,
-                compile_for="scoring",
-            )
-            score_compiled = score_model is not eager_model
-
-        try:
-            samples, sample_logps, log_q_y_means_by_n = (
-                _sample_and_score_hf_in_succession(
-                    sample_model=sample_model,
-                    score_model=score_model,
-                    torch=torch_module,
-                    device=device,
-                    seq_len=capped_n_values[-1],
-                    target_num_samples=num_samples,
-                    n_values=capped_n_values,
-                    sample_batch_size=sample_batch_size,
-                    score_batch_size=score_batch_size,
-                    bos_token_id=bos_token_id,
-                    seed=seed,
-                    sample_cache_path=sample_cache_path,
-                    autocast_dtype=autocast_dtype,
-                    save_every_batches=save_every_batches,
-                    token_log_every=token_log_every,
-                    progress_desc=f"Sampling+scoring hf model={model_name}",
-                )
-            )
-        except Exception as exc:
-            if (sample_compiled or score_compiled) and _is_hf_compile_runtime_error(
-                exc
-            ):
-                print(
-                    "HF sampling/scoring compile backend failed at runtime; "
-                    "retrying in eager mode"
-                )
-                samples, sample_logps, log_q_y_means_by_n = (
-                    _sample_and_score_hf_in_succession(
-                        sample_model=eager_model,
-                        score_model=eager_model,
-                        torch=torch_module,
-                        device=device,
-                        seq_len=capped_n_values[-1],
-                        target_num_samples=num_samples,
-                        n_values=capped_n_values,
-                        sample_batch_size=sample_batch_size,
-                        score_batch_size=score_batch_size,
-                        bos_token_id=bos_token_id,
-                        seed=seed,
-                        sample_cache_path=sample_cache_path,
-                        autocast_dtype=autocast_dtype,
-                        save_every_batches=save_every_batches,
-                        token_log_every=token_log_every,
-                        progress_desc=f"Sampling+scoring hf model={model_name}",
-                    )
-                )
-            else:
-                raise
-    finally:
-        if model is not None:
-            del model
-        if torch_module is not None and device is not None and device.type == "cuda":
-            torch_module.cuda.empty_cache()
-
-    if sample_logps is None or sample_logps.shape[0] < int(num_samples):
-        raise RuntimeError("Missing sampled log-prob cache for HF sampled estimator")
-
-    _save_log_q_y_mean_cache(log_q_y_cache_path, log_q_y_means_by_n)
-    mi_values = _compute_bipartite_mi_from_sampled_q(
-        sample_logps=sample_logps,
-        n_values=capped_n_values,
-        log_q_y_means_by_n=log_q_y_means_by_n,
-    )
-    return mi_values, max_positions
-
-
-def _plot_bipartite_mi(
-    values: dict[str, dict[int, dict[int, float]]],
-    estimators: list[str],
-    out_path: str,
-    title: str,
-    extra_series: list[dict[str, Any]] | None = None,
+def _save_estimator_cache(
+    estimator_cache_path: str,
+    values_by_n: dict[int, float],
 ) -> None:
-    fig, ax = plt.subplots(figsize=(12, 12))
-
-    def _fit_power_law(
-        ns: np.ndarray,
-        ys: np.ndarray,
-        nmax: int = FIT_NMAX,
-    ) -> tuple[float, float] | None:
-        fit_mask = (ns < float(nmax)) & np.isfinite(ys) & (ys > 0.0)
-        if int(np.sum(fit_mask)) < 2:
-            return None
-        x = np.log(ns[fit_mask])
-        y = np.log(ys[fit_mask])
-        if x.size < 2:
-            return None
-        power, log_const = np.polyfit(x, y, 1)
-        const = float(np.exp(log_const))
-        if not np.isfinite(const) or not np.isfinite(power):
-            return None
-        return const, float(power)
-
-    hidden_dims = sorted(
-        {
-            hidden_dim
-            for estimator_values in values.values()
-            for hidden_dim in estimator_values
-        }
+    n_values = np.array(sorted(values_by_n.keys()), dtype=np.int32)
+    values = np.array([values_by_n[int(n)] for n in n_values], dtype=np.float32)
+    np.savez_compressed(
+        estimator_cache_path,
+        n_values=n_values,
+        values=values,
     )
-    if not hidden_dims:
-        raise RuntimeError("No MI values available to plot")
-
-    cmap = plt.cm.viridis
-    if len(hidden_dims) == 1:
-        norm = plt.Normalize(vmin=hidden_dims[0] - 1, vmax=hidden_dims[0] + 1)
-    else:
-        norm = plt.Normalize(vmin=min(hidden_dims), vmax=max(hidden_dims))
-
-    line_styles = {
-        "ckl": "-",
-        "cjs": "--",
-        "sampled": ":",
-    }
-    markers = {
-        "ckl": "o",
-        "cjs": "s",
-        "sampled": "^",
-    }
-    show_marker = len(estimators) > 1
-    fit_handles_by_hidden_dim: dict[int, Line2D] = {}
-    hf_fit_handle: Line2D | None = None
-
-    for estimator in estimators:
-        estimator_values = values.get(estimator, {})
-        for hidden_dim in hidden_dims:
-            series = estimator_values.get(hidden_dim)
-            if not series:
-                continue
-            ns = np.array(sorted(series.keys()), dtype=float)
-            s_ab = np.array([series[int(n)] for n in ns], dtype=float)
-            ax.plot(
-                ns,
-                s_ab,
-                color=cmap(norm(hidden_dim)),
-                linestyle=line_styles.get(estimator, "-"),
-                marker=markers.get(estimator, "o") if show_marker else None,
-                markersize=3 if show_marker else None,
-            )
-            fit = _fit_power_law(ns, s_ab)
-            if fit is not None:
-                const, power = fit
-                fit_ns_max = float(np.max(ns[ns < FIT_NMAX]))
-                fit_ns = np.logspace(
-                    np.log10(float(np.min(ns))),
-                    np.log10(fit_ns_max),
-                    num=200,
-                )
-                fit_curve = const * np.power(fit_ns, power)
-                ax.plot(
-                    fit_ns,
-                    fit_curve,
-                    color=cmap(norm(hidden_dim)),
-                    linestyle=":",
-                    linewidth=1.5,
-                    alpha=0.8,
-                )
-                print(
-                    f"fit estimator={estimator} hidden_dim={hidden_dim}: "
-                    f"MI={const:.4g}*N^{power:.4f} (N<128)"
-                )
-                if estimator == "sampled" or hidden_dim not in fit_handles_by_hidden_dim:
-                    fit_handles_by_hidden_dim[hidden_dim] = Line2D(
-                        [0],
-                        [0],
-                        color=cmap(norm(hidden_dim)),
-                        linestyle=":",
-                        linewidth=1.5,
-                        label=(
-                            rf"$d_h={hidden_dim}$: "
-                            rf"$I(A:B)={const:.3g}\cdot N^{{{power:.3f}}}$"
-                        ),
-                    )
-
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlim(left=6)
-    ax.set_xlabel("N")
-    ax.set_ylabel(r"$I(A:B)$")
-    ax.set_title(title)
-    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-
-    colorbar = fig.colorbar(
-        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-        ax=ax,
-        pad=0.02,
-    )
-    colorbar.set_label("hidden_dim")
-
-    if extra_series is not None:
-        for series_info in extra_series:
-            series = series_info.get("series")
-            if not series:
-                continue
-            ns = np.array(sorted(series.keys()), dtype=float)
-            mi = np.array([series[int(n)] for n in ns], dtype=float)
-            ax.plot(
-                ns,
-                mi,
-                color=series_info.get("color", "black"),
-                linestyle=series_info.get("linestyle", "-."),
-                marker=series_info.get("marker", "^"),
-                markersize=4,
-                linewidth=1.5,
-                label=series_info.get("label", "hf_model"),
-            )
-            fit = _fit_power_law(ns, mi)
-            if fit is not None:
-                const, power = fit
-                fit_ns_max = float(np.max(ns[ns < FIT_NMAX]))
-                fit_ns = np.logspace(
-                    np.log10(float(np.min(ns))),
-                    np.log10(fit_ns_max),
-                    num=200,
-                )
-                fit_curve = const * np.power(fit_ns, power)
-                ax.plot(
-                    fit_ns,
-                    fit_curve,
-                    color=series_info.get("color", "black"),
-                    linestyle=":",
-                    linewidth=1.5,
-                    alpha=0.8,
-                )
-                print(
-                    f"fit series={series_info.get('label', 'hf_model')}: "
-                    f"MI={const:.4g}*N^{power:.4f} (N<128)"
-                )
-                hf_fit_handle = Line2D(
-                    [0],
-                    [0],
-                    color=series_info.get("color", "black"),
-                    linestyle=":",
-                    linewidth=1.5,
-                    label=rf"GPT-2-1.5B: $I(A:B)={const:.3g}\cdot N^{{{power:.3f}}}$",
-                )
-            elif hf_fit_handle is None:
-                hf_fit_handle = Line2D(
-                    [0],
-                    [0],
-                    color=series_info.get("color", "black"),
-                    linestyle=":",
-                    linewidth=1.5,
-                    label="GPT-2-1.5B: fit failed",
-                )
-
-    legend_handles = [
-        fit_handles_by_hidden_dim[hidden_dim]
-        for hidden_dim in sorted(fit_handles_by_hidden_dim)
-    ]
-    if hf_fit_handle is not None:
-        legend_handles.append(hf_fit_handle)
-
-    if legend_handles:
-        ax.legend(
-            handles=legend_handles,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.10),
-            ncol=1,
-            borderaxespad=0.0,
-            labelspacing=0.25,
-            handletextpad=0.4,
-            frameon=False,
-        )
-
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    fig.tight_layout(rect=(0.0, 0.03, 1.0, 1.0))
-    fig.savefig(out_path, dpi=200, bbox_inches="tight", pad_inches=0.02)
-    print(f"Saved to {out_path}")
-    _show_image(out_path)
-
-
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-
-    core = parser.add_argument_group("core")
-    core.add_argument("--group", type=str, required=True)
-    core.add_argument(
-        "--hidden-dim",
-        type=int,
-        nargs="+",
-        default=None,
-        help="Optional hidden_dim filter(s)",
-    )
-    core.add_argument(
-        "--max-n",
-        type=int,
-        default=DEFAULT_MAX_N,
-        help="Maximum N to include in log-spaced N grid",
-    )
-    core.add_argument(
-        "--num-n-values",
-        type=int,
-        default=DEFAULT_NUM_N_VALUES,
-        help="Number of log-spaced N values",
-    )
-    core.add_argument(
-        "--estimator",
-        type=str,
-        choices=["ckl", "cjs", "sampled"],
-        nargs="+",
-        default=["ckl", "cjs"],
-        help="One or more estimators: ckl cjs sampled",
-    )
-    core.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Output plot path",
-    )
-
-    sampled = parser.add_argument_group("sampled estimator")
-    sampled.add_argument(
-        "--num-samples",
-        type=int,
-        default=1000,
-        help="Number of sampled sequences for sampled estimator",
-    )
-    sampled.add_argument(
-        "--batch-size",
-        type=int,
-        default=256,
-        help="Batch size for sampling and scoring in sampled estimator",
-    )
-    sampled.add_argument(
-        "--cache-dir",
-        type=str,
-        default="checkpoints/bipartite_mi_cache",
-        help="Directory for cached downloaded checkpoints",
-    )
-    sampled.add_argument(
-        "--force-resample",
-        action="store_true",
-        help="Force regeneration of sampled caches instead of cache-only mode",
-    )
-
-    hf = parser.add_argument_group("hf sampled overlay")
-    hf.add_argument(
-        "--hf-model",
-        type=str,
-        default=None,
-        help="Optional HF causal LM to evaluate with sampled MI",
-    )
-    hf.add_argument(
-        "--hf-revision",
-        type=str,
-        default=None,
-        help="Optional HF model revision",
-    )
-    hf.add_argument(
-        "--hf-batch-size",
-        type=int,
-        default=None,
-        help=(
-            "Legacy shared HF batch size for sampling+scoring "
-            "(defaults to --batch-size)"
-        ),
-    )
-    hf.add_argument(
-        "--hf-sample-batch-size",
-        type=int,
-        default=None,
-        help="HF sampling batch size (defaults to --hf-batch-size or --batch-size)",
-    )
-    hf.add_argument(
-        "--hf-score-batch-size",
-        type=int,
-        default=None,
-        help="HF q(y) scoring batch size (defaults to --hf-batch-size or --batch-size)",
-    )
-    hf.add_argument(
-        "--hf-save-every-batches",
-        type=int,
-        default=DEFAULT_HF_SAVE_EVERY_BATCHES,
-        help="Persist partial HF sample cache every this many batches",
-    )
-    hf.add_argument(
-        "--hf-token-log-every",
-        type=int,
-        default=1,
-        help="Update HF token-step progress every this many decoded steps",
-    )
-    hf.add_argument(
-        "--hf-compile",
-        type=str,
-        choices=["none", "score", "sample", "both"],
-        default="none",
-        help="Optional torch.compile target for HF path",
-    )
-    hf.add_argument(
-        "--hf-compile-mode",
-        type=str,
-        default="default",
-        help="torch.compile mode for HF path",
-    )
-    hf.add_argument(
-        "--hf-attn-implementation",
-        type=str,
-        default="sdpa",
-        help="HF attention backend (e.g. sdpa, eager, flash_attention_2, none)",
-    )
-    hf.add_argument(
-        "--hf-seed",
-        type=int,
-        default=0,
-        help="Sampling seed for HF model",
-    )
-    hf.add_argument(
-        "--hf-label",
-        type=str,
-        default=None,
-        help="Legend label for HF model curve",
-    )
-    hf.add_argument(
-        "--hf-num-samples",
-        type=int,
-        default=None,
-        help="HF-only number of sampled sequences (defaults to --num-samples)",
-    )
-
-    return parser
-
-
-def _validate_args(args: argparse.Namespace) -> None:
-    if args.max_n < DEFAULT_MIN_N:
-        raise RuntimeError(f"--max-n must be >= {DEFAULT_MIN_N}")
-    if args.num_n_values < 1:
-        raise RuntimeError("--num-n-values must be >= 1")
-    if args.hf_batch_size is not None and args.hf_batch_size < 1:
-        raise RuntimeError("--hf-batch-size must be >= 1")
-    if args.hf_sample_batch_size is not None and args.hf_sample_batch_size < 1:
-        raise RuntimeError("--hf-sample-batch-size must be >= 1")
-    if args.hf_score_batch_size is not None and args.hf_score_batch_size < 1:
-        raise RuntimeError("--hf-score-batch-size must be >= 1")
-    if args.hf_save_every_batches < 1:
-        raise RuntimeError("--hf-save-every-batches must be >= 1")
-    if args.hf_token_log_every < 1:
-        raise RuntimeError("--hf-token-log-every must be >= 1")
-    if args.hf_num_samples is not None and args.hf_num_samples < 1:
-        raise RuntimeError("--hf-num-samples must be >= 1")
-
-
-def _dedupe_estimators(estimator_args: list[str]) -> list[str]:
-    estimators: list[str] = []
-    for estimator in estimator_args:
-        if estimator not in estimators:
-            estimators.append(estimator)
-    return estimators
-
-
-def _filter_runs_by_hidden_dim(
-    runs: list[wandb.apis.public.Run],
-    hidden_dim_filter: list[int] | None,
-    group: str,
-) -> list[wandb.apis.public.Run]:
-    if hidden_dim_filter is None:
-        return runs
-    hidden_dims = set(hidden_dim_filter)
-    filtered_runs = [
-        run
-        for run in runs
-        if int((run.config or {}).get("hidden_dim", -1)) in hidden_dims
-    ]
-    if not filtered_runs:
-        raise RuntimeError(
-            f"No finished runs found for group='{group}' "
-            f"hidden_dim in {sorted(hidden_dims)}"
-        )
-    return filtered_runs
 
 
 def _select_cached_n_values(
@@ -2120,27 +679,407 @@ def _select_cached_n_values(
     )
 
 
-def _compute_logged_mi_for_run(
+def _compatible_sample_cache_entries(
+    cache_dir: str,
+    run_id: str,
+    seq_len: int,
+    batch_size: int | None,
+    bos_token_id: int,
+) -> list[tuple[int, str, str]]:
+    run_cache_dir = os.path.join(os.path.abspath(cache_dir), run_id)
+    if not os.path.isdir(run_cache_dir):
+        return []
+
+    pattern = re.compile(
+        r"^samples_seq(?P<seq>\d+)_num(?P<num>\d+)_"
+        rf"samplebs(?P<samplebs>\d+)_bos{int(bos_token_id)}\.npz$"
+    )
+    entries: list[tuple[int, str, str]] = []
+    for filename in os.listdir(run_cache_dir):
+        match = pattern.match(filename)
+        if match is None:
+            continue
+        seq = int(match.group("seq"))
+        if seq < int(seq_len):
+            continue
+        samplebs = int(match.group("samplebs"))
+        if batch_size is not None and samplebs != int(batch_size):
+            continue
+        num_samples = int(match.group("num"))
+        if num_samples < 1:
+            continue
+        sample_cache_path = os.path.join(run_cache_dir, filename)
+        log_q_y_cache_path = _log_q_y_cache_path_for_sample_cache(sample_cache_path)
+        entries.append((num_samples, sample_cache_path, log_q_y_cache_path))
+    entries.sort(key=lambda item: item[0])
+    return entries
+
+
+def _find_reusable_complete_cache(
+    cache_dir: str,
+    run_id: str,
+    seq_len: int,
+    target_num_samples: int,
+    batch_size: int,
+    bos_token_id: int,
+    n_values: list[int],
+) -> tuple[np.ndarray, dict[int, float], int, str, str] | None:
+    entries = _compatible_sample_cache_entries(
+        cache_dir=cache_dir,
+        run_id=run_id,
+        seq_len=seq_len,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+    )
+    if not entries:
+        entries = _compatible_sample_cache_entries(
+            cache_dir=cache_dir,
+            run_id=run_id,
+            seq_len=seq_len,
+            batch_size=None,
+            bos_token_id=bos_token_id,
+        )
+
+    best_ge_target: tuple[np.ndarray, dict[int, float], int, str, str] | None = None
+    best_any: tuple[np.ndarray, dict[int, float], int, str, str] | None = None
+    for _, sample_cache_path, log_q_y_cache_path in entries:
+        log_q_y_means_by_n = _load_log_q_y_mean_cache(log_q_y_cache_path)
+        sample_logps = _load_sample_logps(sample_cache_path)
+        if sample_logps is None:
+            continue
+        actual_num_samples = int(sample_logps.shape[0])
+        if actual_num_samples < 1:
+            continue
+        available_n_values = _select_cached_n_values(
+            n_values,
+            log_q_y_means_by_n,
+            sample_logps,
+        )
+        if not available_n_values:
+            continue
+        candidate = (
+            sample_logps,
+            log_q_y_means_by_n,
+            actual_num_samples,
+            sample_cache_path,
+            log_q_y_cache_path,
+        )
+        if best_any is None or actual_num_samples > best_any[2]:
+            best_any = candidate
+        if actual_num_samples >= int(target_num_samples):
+            if best_ge_target is None or actual_num_samples > best_ge_target[2]:
+                best_ge_target = candidate
+
+    if best_ge_target is not None:
+        return best_ge_target
+    return best_any
+
+
+def _compute_log_q_y_means(
+    samples,
+    apply_fn,
+    params: dict,
+    n_values: list[int],
+    batch_size: int,
+    bos_token_id: int,
+    progress_desc_prefix: str,
+    *,
+    sanity_check: bool = False,
+    sanity_tol: float = 1e-5,
+) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for n in n_values:
+        half = n // 2
+        y_tokens = samples[:, half:n]
+        y_logps = _score_logps(
+            apply_fn=apply_fn,
+            params=params,
+            tokens=y_tokens,
+            batch_size=batch_size,
+            bos_token_id=bos_token_id,
+            progress_desc=f"{progress_desc_prefix} N={n}",
+        )
+        out[n] = float(np.mean(np.sum(y_logps, axis=1)))
+        if sanity_check:
+            # L_y,t = -E[log q(y_t | y_{<t})] computed on the same scored suffixes.
+            l_y_by_pos = -np.mean(y_logps, axis=0)
+            expected = -float(np.sum(l_y_by_pos))
+            err = abs(out[n] - expected)
+            if err > float(sanity_tol):
+                print(
+                    "Sanity check warning for log q(y) at N="
+                    f"{n}: mean(sum logp)={out[n]:.8g}, -sum(L_y)={expected:.8g}, err={err:.3g}"
+                )
+    return out
+
+
+def _sanity_check_direct_data_terms(
+    *,
+    sample_logps: np.ndarray,
+    log_q_y_means_by_n: dict[int, float],
+    n_values: list[int],
+    tol: float = 1e-5,
+) -> None:
+    sample_logps_cumsum = np.cumsum(sample_logps, axis=1)
+    l_by_pos = -np.mean(sample_logps, axis=0)  # positions 1..T
+    max_err_cond = 0.0
+    max_err_marg = 0.0
+    worst_cond: tuple[int, float, float] | None = None
+    worst_marg: tuple[int, float, float] | None = None
+
+    for n in n_values:
+        if n not in log_q_y_means_by_n:
+            continue
+        half = n // 2
+        cond_code = float(
+            np.mean(sample_logps_cumsum[:, n - 1] - sample_logps_cumsum[:, half - 1])
+        )
+        cond_l = -float(np.sum(l_by_pos[half:n]))
+        err_cond = abs(cond_code - cond_l)
+        if err_cond > max_err_cond:
+            max_err_cond = err_cond
+            worst_cond = (n, cond_code, cond_l)
+
+        marg_code = float(log_q_y_means_by_n[n])
+        # Stationarity-based substitution target: E[log q(B)] ?= E[log q(A)]
+        # and E[log q(A)] = -sum_{t=1..half} L_t, where L_t is computed from
+        # the same scored sample_logps.
+        marg_l_stationary = -float(np.sum(l_by_pos[:half]))
+        err_marg = abs(marg_code - marg_l_stationary)
+        if err_marg > max_err_marg:
+            max_err_marg = err_marg
+            worst_marg = (n, marg_code, marg_l_stationary)
+
+    if worst_cond is None:
+        print("Sanity check: no usable N values for direct/data conditional term")
+        return
+
+    if max_err_cond <= float(tol):
+        print(
+            "Sanity check OK (direct/data): "
+            f"max |E[log q(B|A)] - (-sum L_n)| = {max_err_cond:.3g}"
+        )
+    else:
+        n, cond_code, cond_l = worst_cond
+        print(
+            "Sanity check FAILED (direct/data): "
+            f"max err={max_err_cond:.3g} at N={n}. "
+            f"E[log q(B|A)]={cond_code:.6g}, -sum L_n={cond_l:.6g}"
+        )
+
+    if worst_marg is None:
+        print("Sanity check: no usable N values for direct/data marginal term")
+        return
+
+    if max_err_marg <= float(tol):
+        print(
+            "Sanity check OK (direct/data, stationarity): "
+            f"max |E[log q(B)] - (-sum_{{1..N/2}} L_n)| = {max_err_marg:.3g}"
+        )
+    else:
+        n, marg_code, marg_l = worst_marg
+        print(
+            "Sanity check WARNING (direct/data, stationarity): "
+            f"max err={max_err_marg:.3g} at N={n}. "
+            f"E[log q(B)]={marg_code:.6g}, -sum_{{1..N/2}} L_n={marg_l:.6g}"
+        )
+
+
+def _compute_bipartite_mi_from_sampled_q(
+    sample_logps: np.ndarray,
+    n_values: list[int],
+    log_q_y_means_by_n: dict[int, float],
+) -> dict[int, float]:
+    sample_logps_cumsum = np.cumsum(sample_logps, axis=1)
+    out: dict[int, float] = {}
+    for n in n_values:
+        if n not in log_q_y_means_by_n:
+            raise RuntimeError(f"Missing cached log q(y) for N={n}")
+        half = n // 2
+        log_q_y_given_x = np.mean(
+            sample_logps_cumsum[:, n - 1] - sample_logps_cumsum[:, half - 1]
+        )
+        out[n] = float(log_q_y_given_x - log_q_y_means_by_n[n])
+    return out
+
+
+def _extract_ngram_index(name: str) -> int | None:
+    if "/ngram_" in name or "/n_gram_" in name:
+        try:
+            return int(name.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            return None
+    return None
+
+
+def _combined_ngram_keys(keys: list[str]) -> list[str]:
+    return [
+        key
+        for key in keys
+        if key.startswith("combined/ngram_") or key.startswith("combined/n_gram_")
+    ]
+
+
+def _extract_combined_ngram_losses(run: wandb.apis.public.Run) -> dict[int, float]:
+    out: dict[int, float] = {}
+
+    summary = run.summary or {}
+    combined_keys = _combined_ngram_keys(list(summary.keys()))
+    for key in combined_keys:
+        n = _extract_ngram_index(key)
+        value = summary.get(key)
+        if n is None:
+            continue
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(val):
+            out[n] = val
+    if out:
+        return out
+
+    history_cols = list(run.history(samples=1).columns)
+    combined_keys = _combined_ngram_keys(history_cols)
+    if not combined_keys:
+        return out
+    history = run.history(keys=combined_keys, samples=10_000)
+    if history.empty:
+        return out
+
+    valid = history[combined_keys].dropna(how="all")
+    if valid.empty:
+        return out
+    last_row = valid.iloc[-1]
+    for key in combined_keys:
+        n = _extract_ngram_index(key)
+        value = last_row.get(key)
+        if n is None:
+            continue
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(val):
+            out[n] = val
+    return out
+
+
+def _compute_ngram_mi_for_run(
     run: wandb.apis.public.Run,
-    hidden_dim: int,
     n_values: list[int],
 ) -> dict[int, float]:
-    conditional_entropy = _extract_conditional_entropy(run)
-    if not conditional_entropy:
+    losses_by_n = _extract_combined_ngram_losses(run)
+    if not losses_by_n:
         raise RuntimeError(
-            "No conditional entropy metrics found for "
-            f"run '{run.name}' (hidden_dim={hidden_dim})"
+            "No combined n-gram losses found for run "
+            f"{run.id}; cannot compute n-gram MI estimator"
         )
-    mi_values = _compute_bipartite_mi_from_conditional_entropy(
-        conditional_entropy,
-        n_values,
+
+    target_even_ns = sorted(
+        {int(n) for n in n_values if int(n) >= 2 and int(n) % 2 == 0}
     )
-    if not mi_values:
+    even_ns = [n for n in target_even_ns if n in losses_by_n]
+    if not even_ns:
         raise RuntimeError(
-            "Insufficient conditional entropy metrics to compute bipartite MI for "
-            f"run '{run.name}' (hidden_dim={hidden_dim})"
+            "No requested default even N values found in combined n-gram losses for "
+            f"run {run.id}; cannot compute n-gram MI estimator"
         )
-    return mi_values
+
+    max_n = max(even_ns)
+    losses = np.full(max_n + 1, np.nan, dtype=float)
+    for n, value in losses_by_n.items():
+        if 1 <= n <= max_n:
+            losses[n] = float(value)
+
+    finite_mask = np.isfinite(losses[1:])
+    cumulative = np.cumsum(np.where(finite_mask, losses[1:], 0.0))
+    prefix_complete = np.cumprod(finite_mask.astype(np.int8)).astype(bool)
+
+    out: dict[int, float] = {}
+    for n in even_ns:
+        if not prefix_complete[n - 1]:
+            continue
+        half = n // 2
+        first_sum = float(cumulative[half - 1])
+        second_sum = float(cumulative[n - 1] - cumulative[half - 1])
+        out[n] = -second_sum + first_sum
+
+    if not out:
+        raise RuntimeError(
+            "No usable requested default even N values with complete 1..N prefix "
+            f"in combined n-gram losses for run {run.id}"
+        )
+    return out
+
+
+def _compute_v_club_from_samples(
+    *,
+    samples: np.ndarray,
+    sample_logps: np.ndarray,
+    n_values: list[int],
+    apply_fn,
+    params: dict,
+    batch_size: int,
+    bos_token_id: int,
+    rng: np.random.Generator | None = None,
+) -> dict[int, float]:
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    num_samples = int(sample_logps.shape[0])
+    if num_samples < 2:
+        raise RuntimeError("Need at least 2 samples for v-club estimator")
+
+    sample_logps_cumsum = np.cumsum(sample_logps, axis=1)
+    out: dict[int, float] = {}
+    for n in n_values:
+        half = n // 2
+        if half < 1:
+            continue
+
+        log_q_y_given_x = np.mean(
+            sample_logps_cumsum[:, n - 1] - sample_logps_cumsum[:, half - 1]
+        )
+
+        tokens_n = samples[:, :n]
+        x_tokens = tokens_n[:, :half]
+        y_tokens = tokens_n[:, half:n]
+        shuffled_indices = rng.permutation(num_samples)
+        x_tokens_shuffled = x_tokens[shuffled_indices]
+        cross_tokens = np.concatenate([x_tokens_shuffled, y_tokens], axis=1)
+        cross_logps = _score_logps(
+            apply_fn=apply_fn,
+            params=params,
+            tokens=cross_tokens,
+            batch_size=batch_size,
+            bos_token_id=bos_token_id,
+            progress_desc=f"Scoring v-club cross N={n}",
+        )
+        log_q_y_given_x_shuffled = np.mean(np.sum(cross_logps[:, half:n], axis=1))
+        out[n] = float(log_q_y_given_x - log_q_y_given_x_shuffled)
+    return out
+
+
+def _filter_runs_by_hidden_dim(
+    runs: list[wandb.apis.public.Run],
+    hidden_dim_filter: list[int] | None,
+    group: str,
+) -> list[wandb.apis.public.Run]:
+    if hidden_dim_filter is None:
+        return runs
+    hidden_dims = set(hidden_dim_filter)
+    filtered_runs = [
+        run
+        for run in runs
+        if int((run.config or {}).get("hidden_dim", -1)) in hidden_dims
+    ]
+    if not filtered_runs:
+        raise RuntimeError(
+            f"No finished runs found for group='{group}' "
+            f"hidden_dim in {sorted(hidden_dims)}"
+        )
+    return filtered_runs
 
 
 def _compute_lstm_sampled_mi_for_run(
@@ -2180,7 +1119,7 @@ def _compute_lstm_sampled_mi_for_run(
         )
         if reusable_cache is None:
             raise RuntimeError(
-                "No complete cached sampled MI found for "
+                "No complete cached direct MI found for "
                 f"hidden_dim={hidden_dim}. Re-run with --force-resample to regenerate."
             )
         (
@@ -2197,30 +1136,29 @@ def _compute_lstm_sampled_mi_for_run(
         )
         if not available_n_values:
             raise RuntimeError(
-                "Cached sampled artifacts have no usable N values for "
+                "Cached direct artifacts have no usable N values for "
                 f"hidden_dim={hidden_dim}. Re-run with --force-resample to regenerate."
             )
         if len(available_n_values) < len(n_values):
             print(
-                "Using cached sampled MI subset for hidden_dim="
+                "Using cached direct MI subset for hidden_dim="
                 f"{hidden_dim}: {len(available_n_values)}/{len(n_values)} "
                 "N values available"
             )
-        mi_values = _compute_bipartite_mi_from_sampled_q(
+        print(
+            "Using cached direct MI for hidden_dim="
+            f"{hidden_dim} from {os.path.basename(reusable_sample_cache_path)} "
+            f"(num_samples={reusable_num_samples}, requested={num_samples})"
+        )
+        return _compute_bipartite_mi_from_sampled_q(
             sample_logps=reusable_sample_logps,
             n_values=available_n_values,
             log_q_y_means_by_n=reusable_log_q_y_means_by_n,
         )
-        print(
-            "Using cached sampled MI for hidden_dim="
-            f"{hidden_dim} from {os.path.basename(reusable_sample_cache_path)} "
-            f"(num_samples={reusable_num_samples}, requested={num_samples})"
-        )
-        return mi_values
 
     print(
         "Force resample enabled for hidden_dim="
-        f"{hidden_dim}; regenerating sampled cache"
+        f"{hidden_dim}; regenerating direct cache"
     )
     if os.path.exists(sample_cache_path):
         os.remove(sample_cache_path)
@@ -2229,15 +1167,10 @@ def _compute_lstm_sampled_mi_for_run(
 
     import jax
 
-    from models.lstm import LSTMLanguageModel
     from training.trainer import create_train_state
 
     ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
-    model = LSTMLanguageModel(
-        hidden_dim=int(cfg["hidden_dim"]),
-        num_layers=int(cfg["num_layers"]),
-        vocab_size=int(cfg["vocab_size"]),
-    )
+    model = _build_language_model_from_config(cfg)
     rng = jax.random.PRNGKey(0)
     state_cfg = SimpleNamespace(
         batch_size=int(cfg.get("batch_size", 1)),
@@ -2249,7 +1182,7 @@ def _compute_lstm_sampled_mi_for_run(
     ckpt_run_id = restored.get("wandb_run_id")
     if ckpt_run_id != run.id:
         raise RuntimeError(
-            "Checkpoint/run mismatch: " f"ckpt_run_id={ckpt_run_id}, run.id={run.id}"
+            f"Checkpoint/run mismatch: ckpt_run_id={ckpt_run_id}, run.id={run.id}"
         )
 
     sample_params = _normalize_params_for_step(
@@ -2286,214 +1219,943 @@ def _compute_lstm_sampled_mi_for_run(
     )
 
 
-def _resolve_hf_series_options(
-    args: argparse.Namespace,
-) -> tuple[int, int, int, str | None]:
-    hf_num_samples = (
-        args.num_samples if args.hf_num_samples is None else args.hf_num_samples
+def _compute_lstm_direct_mi_for_run_from_data(
+    run: wandb.apis.public.Run,
+    api: wandb.Api,
+    hidden_dim: int,
+    n_values: list[int],
+    *,
+    num_samples: int,
+    batch_size: int,
+    cache_dir: str,
+    force_resample: bool,
+    data_split: str,
+    data_seed: int,
+    sanity_check: bool = False,
+) -> dict[int, float]:
+    cfg = run.config or {}
+    bos_token_id = int(cfg.get("bos_token_id", 0))
+    seq_len_required = int(n_values[-1])
+    seq_len_data = int(cfg.get("seq_len", seq_len_required))
+    if seq_len_required > seq_len_data:
+        raise RuntimeError(
+            "Data sample source requires N <= config.seq_len. "
+            f"Got max_n={seq_len_required}, config.seq_len={seq_len_data}"
+        )
+
+    data_key = _data_cache_key(
+        split=data_split,
+        seq_len=seq_len_required,
+        num_samples=None,
+        bos_token_id=bos_token_id,
+        seed=None,
     )
-    hf_default_batch_size = (
-        args.batch_size if args.hf_batch_size is None else args.hf_batch_size
+    sample_cache_path, log_q_y_cache_path = _data_cache_paths(
+        cache_dir,
+        run.id,
+        data_key,
     )
-    hf_sample_batch_size = (
-        hf_default_batch_size
-        if args.hf_sample_batch_size is None
-        else args.hf_sample_batch_size
+
+    if (
+        (not force_resample)
+        and os.path.exists(sample_cache_path)
+        and os.path.exists(log_q_y_cache_path)
+    ):
+        cached = _load_data_sample_cache(sample_cache_path)
+        if cached is not None:
+            samples, sample_logps = cached
+            log_q_y_means_by_n = _load_log_q_y_mean_cache(log_q_y_cache_path)
+            available_n_values = [
+                int(n)
+                for n in n_values
+                if int(n) in log_q_y_means_by_n and int(n) <= int(sample_logps.shape[1])
+            ]
+            if available_n_values:
+                print(
+                    "Using cached data direct MI for hidden_dim="
+                    f"{hidden_dim} from {os.path.basename(sample_cache_path)} "
+                    f"(num_samples={samples.shape[0]})"
+                )
+                if sanity_check:
+                    _sanity_check_direct_data_terms(
+                        sample_logps=sample_logps,
+                        log_q_y_means_by_n=log_q_y_means_by_n,
+                        n_values=available_n_values,
+                    )
+                return _compute_bipartite_mi_from_sampled_q(
+                    sample_logps=sample_logps,
+                    n_values=available_n_values,
+                    log_q_y_means_by_n=log_q_y_means_by_n,
+                )
+
+    import jax
+
+    from training.trainer import create_train_state
+
+    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
+    model = _build_language_model_from_config(cfg)
+    rng = jax.random.PRNGKey(0)
+    state_cfg = SimpleNamespace(
+        batch_size=int(cfg.get("batch_size", 1)),
+        seq_len=int(cfg.get("seq_len", seq_len_required)),
+        learning_rate=float(cfg.get("learning_rate", 1e-3)),
     )
-    hf_score_batch_size = (
-        hf_default_batch_size
-        if args.hf_score_batch_size is None
-        else args.hf_score_batch_size
+    state = create_train_state(model, state_cfg, rng)
+    state, restored = _load_checkpoint(ckpt_path, state)
+    ckpt_run_id = restored.get("wandb_run_id")
+    if ckpt_run_id != run.id:
+        raise RuntimeError(
+            f"Checkpoint/run mismatch: ckpt_run_id={ckpt_run_id}, run.id={run.id}"
+        )
+
+    sample_params = _normalize_params_for_step(state.params, int(cfg["num_layers"]))
+
+    # Pull the entire cached dataset split (validation by default).
+    samples_full = _load_data_chunks(
+        cfg=cfg,
+        split=data_split,
+        num_samples=None,
+        rng=None,
     )
-    hf_attn_implementation = (
-        None
-        if str(args.hf_attn_implementation).lower() == "none"
-        else args.hf_attn_implementation
+    samples = np.array(samples_full[:, :seq_len_required], dtype=np.int32)
+
+    sample_logps = _score_logps(
+        apply_fn=state.apply_fn,
+        params=sample_params,
+        tokens=samples,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+        progress_desc=f"Scoring data samples d_h={hidden_dim}",
     )
-    return (
-        hf_num_samples,
-        hf_sample_batch_size,
-        hf_score_batch_size,
-        hf_attn_implementation,
+    _save_data_sample_cache(sample_cache_path, samples, sample_logps)
+
+    log_q_y_means_by_n = _compute_log_q_y_means(
+        samples=samples,
+        apply_fn=state.apply_fn,
+        params=sample_params,
+        n_values=n_values,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+        progress_desc_prefix=f"Scoring y (data) d_h={hidden_dim}",
+        sanity_check=bool(sanity_check),
     )
+    _save_log_q_y_mean_cache(log_q_y_cache_path, log_q_y_means_by_n)
+
+    if sanity_check:
+        _sanity_check_direct_data_terms(
+            sample_logps=sample_logps,
+            log_q_y_means_by_n=log_q_y_means_by_n,
+            n_values=n_values,
+        )
+
+    return _compute_bipartite_mi_from_sampled_q(
+        sample_logps=sample_logps,
+        n_values=n_values,
+        log_q_y_means_by_n=log_q_y_means_by_n,
+    )
+
+
+def _compute_lstm_v_club_for_run_from_data(
+    run: wandb.apis.public.Run,
+    api: wandb.Api,
+    hidden_dim: int,
+    n_values: list[int],
+    *,
+    num_samples: int,
+    batch_size: int,
+    cache_dir: str,
+    force_resample: bool,
+    data_split: str,
+    data_seed: int,
+) -> dict[int, float]:
+    cfg = run.config or {}
+    bos_token_id = int(cfg.get("bos_token_id", 0))
+    seq_len_required = int(n_values[-1])
+    seq_len_data = int(cfg.get("seq_len", seq_len_required))
+    if seq_len_required > seq_len_data:
+        raise RuntimeError(
+            "Data sample source requires N <= config.seq_len. "
+            f"Got max_n={seq_len_required}, config.seq_len={seq_len_data}"
+        )
+
+    data_key = _data_cache_key(
+        split=data_split,
+        seq_len=seq_len_required,
+        num_samples=None,
+        bos_token_id=bos_token_id,
+        seed=None,
+    )
+    sample_cache_path, _ = _data_cache_paths(
+        cache_dir,
+        run.id,
+        data_key,
+    )
+    vclub_cache_path = _data_estimator_cache_path(
+        cache_dir,
+        run.id,
+        data_key,
+        "v-club",
+    )
+
+    if not force_resample:
+        cached = _load_data_sample_cache(sample_cache_path)
+        if cached is not None and os.path.exists(vclub_cache_path):
+            samples, sample_logps = cached
+            cached_vclub = _load_estimator_cache(vclub_cache_path)
+            available_n_values = [
+                int(n)
+                for n in n_values
+                if int(n) in cached_vclub and int(n) <= int(sample_logps.shape[1])
+            ]
+            if available_n_values:
+                print(
+                    "Using cached data v-club for hidden_dim="
+                    f"{hidden_dim} from {os.path.basename(vclub_cache_path)}"
+                )
+                return {int(n): float(cached_vclub[int(n)]) for n in available_n_values}
+
+    import jax
+
+    from training.trainer import create_train_state
+
+    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
+    model = _build_language_model_from_config(cfg)
+    rng = jax.random.PRNGKey(0)
+    state_cfg = SimpleNamespace(
+        batch_size=int(cfg.get("batch_size", 1)),
+        seq_len=int(cfg.get("seq_len", seq_len_required)),
+        learning_rate=float(cfg.get("learning_rate", 1e-3)),
+    )
+    state = create_train_state(model, state_cfg, rng)
+    state, restored = _load_checkpoint(ckpt_path, state)
+    ckpt_run_id = restored.get("wandb_run_id")
+    if ckpt_run_id != run.id:
+        raise RuntimeError(
+            f"Checkpoint/run mismatch: ckpt_run_id={ckpt_run_id}, run.id={run.id}"
+        )
+
+    sample_params = _normalize_params_for_step(state.params, int(cfg["num_layers"]))
+
+    cached = None if force_resample else _load_data_sample_cache(sample_cache_path)
+    if cached is None:
+        samples_full = _load_data_chunks(
+            cfg=cfg,
+            split=data_split,
+            num_samples=None,
+            rng=None,
+        )
+        samples = np.array(samples_full[:, :seq_len_required], dtype=np.int32)
+        sample_logps = _score_logps(
+            apply_fn=state.apply_fn,
+            params=sample_params,
+            tokens=samples,
+            batch_size=batch_size,
+            bos_token_id=bos_token_id,
+            progress_desc=f"Scoring data samples d_h={hidden_dim}",
+        )
+        _save_data_sample_cache(sample_cache_path, samples, sample_logps)
+    else:
+        samples, sample_logps = cached
+
+    available_n_values = [
+        int(n) for n in n_values if int(n) <= int(sample_logps.shape[1])
+    ]
+    if not available_n_values:
+        raise RuntimeError(
+            f"No usable N values for data v-club hidden_dim={hidden_dim}"
+        )
+
+    cached_vclub_values = (
+        {} if force_resample else _load_estimator_cache(vclub_cache_path)
+    )
+    missing_n_values = [
+        n for n in available_n_values if int(n) not in cached_vclub_values
+    ]
+    if missing_n_values:
+        computed_vclub_values = _compute_v_club_from_samples(
+            samples=samples,
+            sample_logps=sample_logps,
+            n_values=missing_n_values,
+            apply_fn=state.apply_fn,
+            params=sample_params,
+            batch_size=batch_size,
+            bos_token_id=bos_token_id,
+            rng=np.random.default_rng(0),
+        )
+        cached_vclub_values.update(computed_vclub_values)
+        _save_estimator_cache(vclub_cache_path, cached_vclub_values)
+
+    out = {
+        int(n): float(cached_vclub_values[int(n)])
+        for n in available_n_values
+        if int(n) in cached_vclub_values
+    }
+    if not out:
+        raise RuntimeError(
+            f"No cached/computed data v-club values for hidden_dim={hidden_dim}"
+        )
+    return out
+
+
+def _compute_lstm_v_club_for_run(
+    run: wandb.apis.public.Run,
+    api: wandb.Api,
+    hidden_dim: int,
+    n_values: list[int],
+    *,
+    num_samples: int,
+    batch_size: int,
+    cache_dir: str,
+    force_resample: bool,
+) -> dict[int, float]:
+    cfg = run.config or {}
+    bos_token_id = int(cfg.get("bos_token_id", 0))
+
+    reusable_cache = _find_reusable_complete_cache(
+        cache_dir=cache_dir,
+        run_id=run.id,
+        seq_len=n_values[-1],
+        target_num_samples=num_samples,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+        n_values=n_values,
+    )
+    if reusable_cache is None and force_resample:
+        _compute_lstm_sampled_mi_for_run(
+            run,
+            api,
+            hidden_dim,
+            n_values,
+            num_samples=num_samples,
+            batch_size=batch_size,
+            cache_dir=cache_dir,
+            force_resample=True,
+        )
+        reusable_cache = _find_reusable_complete_cache(
+            cache_dir=cache_dir,
+            run_id=run.id,
+            seq_len=n_values[-1],
+            target_num_samples=num_samples,
+            batch_size=batch_size,
+            bos_token_id=bos_token_id,
+            n_values=n_values,
+        )
+    if reusable_cache is None:
+        raise RuntimeError(
+            "No complete cached direct artifacts found for "
+            f"hidden_dim={hidden_dim}. Re-run with --force-resample."
+        )
+
+    sample_logps = reusable_cache[0]
+    sample_cache_path = reusable_cache[3]
+    available_n_values = [n for n in n_values if int(n) <= int(sample_logps.shape[1])]
+    if not available_n_values:
+        raise RuntimeError(f"No usable N values for v-club hidden_dim={hidden_dim}")
+
+    cached_samples = _load_sample_cache(sample_cache_path)
+    if cached_samples is None:
+        raise RuntimeError(f"Failed to load cached samples from {sample_cache_path}")
+    samples, cached_sample_logps = cached_samples
+
+    vclub_cache_path = _estimator_cache_path_for_sample_cache(
+        sample_cache_path,
+        "v-club",
+    )
+    cached_vclub_values = _load_estimator_cache(vclub_cache_path)
+    missing_n_values = [
+        n for n in available_n_values if int(n) not in cached_vclub_values
+    ]
+
+    if missing_n_values:
+        import jax
+
+        from training.trainer import create_train_state
+
+        ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
+        model = _build_language_model_from_config(cfg)
+        rng = jax.random.PRNGKey(0)
+        state_cfg = SimpleNamespace(
+            batch_size=int(cfg.get("batch_size", 1)),
+            seq_len=int(cfg.get("seq_len", n_values[-1])),
+            learning_rate=float(cfg.get("learning_rate", 1e-3)),
+        )
+        state = create_train_state(model, state_cfg, rng)
+        state, restored = _load_checkpoint(ckpt_path, state)
+        ckpt_run_id = restored.get("wandb_run_id")
+        if ckpt_run_id != run.id:
+            raise RuntimeError(
+                "Checkpoint/run mismatch: "
+                f"ckpt_run_id={ckpt_run_id}, run.id={run.id}"
+            )
+        sample_params = _normalize_params_for_step(
+            state.params,
+            int(cfg["num_layers"]),
+        )
+
+        computed_vclub_values = _compute_v_club_from_samples(
+            samples=samples,
+            sample_logps=cached_sample_logps,
+            n_values=missing_n_values,
+            apply_fn=state.apply_fn,
+            params=sample_params,
+            batch_size=batch_size,
+            bos_token_id=bos_token_id,
+            rng=np.random.default_rng(0),
+        )
+        cached_vclub_values.update(computed_vclub_values)
+        _save_estimator_cache(vclub_cache_path, cached_vclub_values)
+
+    run_vclub_values = {
+        int(n): float(cached_vclub_values[int(n)])
+        for n in available_n_values
+        if int(n) in cached_vclub_values
+    }
+    if not run_vclub_values:
+        raise RuntimeError(
+            f"No cached/computed v-club values for hidden_dim={hidden_dim}"
+        )
+    return run_vclub_values
+
+
+def _fit_power_law(
+    ns: np.ndarray,
+    ys: np.ndarray,
+    fit_nmin: int,
+    fit_nmax: int,
+) -> tuple[float, float] | None:
+    fit_mask = (ns >= float(fit_nmin)) & np.isfinite(ys) & (ys > 0.0)
+    if fit_nmax > 0:
+        fit_mask = fit_mask & (ns < float(fit_nmax))
+    if int(np.sum(fit_mask)) < 2:
+        return None
+    x = np.log(ns[fit_mask])
+    y = np.log(ys[fit_mask])
+    if x.size < 2:
+        return None
+    power, log_const = np.polyfit(x, y, 1)
+    const = float(np.exp(log_const))
+    if not np.isfinite(const) or not np.isfinite(power):
+        return None
+    return const, float(power)
+
+
+def _load_external_mi_data(source: str) -> tuple[np.ndarray, np.ndarray]:
+    source_map = {
+        "cagnetta": "cagnetta_mi.csv",
+        "kaplan": "kaplan_mi.csv",
+        "shengqi": "shengqi_mi.csv",
+        "shengi": "shengqi_mi.csv",
+    }
+    if source not in source_map:
+        raise RuntimeError(f"Unsupported external MI source: {source}")
+
+    primary = source_map[source]
+    candidates = [primary]
+    if source == "shengqi":
+        candidates.append("shengi_mi.csv")
+    if source == "shengi":
+        candidates.append("shengqi_mi.csv")
+
+    data_path = None
+    for filename in candidates:
+        candidate_path = os.path.join(
+            os.path.dirname(__file__), "..", "externalData", filename
+        )
+        if os.path.exists(candidate_path):
+            data_path = candidate_path
+            break
+    if data_path is None:
+        raise FileNotFoundError(
+            "Missing external MI file. Looked for: " + ", ".join(candidates)
+        )
+
+    data = np.loadtxt(data_path, delimiter=",")
+    if data.ndim != 2 or data.shape[1] < 2:
+        raise RuntimeError(
+            f"Unexpected external MI data shape for '{source}': {data.shape}"
+        )
+    if data.shape[1] >= 3:
+        n_values = 2.0 * data[:, 0]
+        mi_values = data[:, 2]
+    else:
+        n_values = data[:, 0]
+        mi_values = data[:, 1]
+    return n_values, mi_values
+
+
+def _plot_bipartite_mi(
+    values: dict[str, dict[tuple[str, int], dict[int, float]]],
+    estimators: list[str],
+    out_path: str,
+    title: str,
+    group_labels: dict[str, str],
+    include_external: list[str] | None = None,
+    fit_nmin: int = FIT_NMIN,
+    fit_nmax: int = FIT_NMAX,
+) -> None:
+    series_keys = sorted(
+        {
+            series_key
+            for estimator_values in values.values()
+            for series_key in estimator_values
+        }
+    )
+    if not series_keys:
+        raise RuntimeError("No MI values available to plot")
+
+    hidden_dims = sorted({int(hidden_dim) for _, hidden_dim in series_keys})
+
+    fig, ax = plt.subplots(figsize=(12, 12))
+    cmap = plt.cm.viridis
+    if len(hidden_dims) == 1:
+        norm = plt.Normalize(vmin=hidden_dims[0] - 1, vmax=hidden_dims[0] + 1)
+    else:
+        norm = plt.Normalize(vmin=min(hidden_dims), vmax=max(hidden_dims))
+
+    marker_by_estimator = {
+        "direct": "^",
+        "v-club": "o",
+        "n-gram": "s",
+    }
+    marker_by_group: dict[str, str] = {}
+    marker_cycle = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    for idx, group_name in enumerate(sorted({group for group, _ in series_keys})):
+        marker_by_group[group_name] = marker_cycle[idx % len(marker_cycle)]
+
+    fit_params_by_series: dict[tuple[str, int], dict[str, tuple[float, float]]] = {}
+    for estimator in estimators:
+        estimator_values = values.get(estimator, {})
+        for series_key in series_keys:
+            group_name, hidden_dim = series_key
+            series = estimator_values.get(series_key)
+            if not series:
+                continue
+            ns = np.array(sorted(series.keys()), dtype=float)
+            mi = np.array([series[int(n)] for n in ns], dtype=float)
+            color = cmap(norm(hidden_dim))
+            ax.scatter(
+                ns,
+                mi,
+                color=color,
+                edgecolor="black",
+                marker=(
+                    marker_by_estimator[estimator]
+                    if len(marker_by_group) == 1
+                    else marker_by_group[group_name]
+                ),
+                s=40,
+                alpha=0.5,
+            )
+
+            fit = _fit_power_law(ns, mi, fit_nmin, fit_nmax)
+            fit_window_mask = ns >= float(fit_nmin)
+            if fit_nmax > 0:
+                fit_window_mask = fit_window_mask & (ns < float(fit_nmax))
+            if fit is not None and np.any(fit_window_mask):
+                const, power = fit
+                fit_ns_min = float(np.min(ns[fit_window_mask]))
+                fit_ns_max = float(np.max(ns[fit_window_mask]))
+                fit_ns = np.logspace(
+                    np.log10(fit_ns_min),
+                    np.log10(fit_ns_max),
+                    num=200,
+                )
+                fit_curve = const * np.power(fit_ns, power)
+                ax.plot(
+                    fit_ns,
+                    fit_curve,
+                    color=color,
+                    linestyle=":",
+                    linewidth=1.5,
+                    alpha=0.8,
+                )
+                print(
+                    f"fit group={group_name} estimator={estimator} hidden_dim={hidden_dim}: "
+                    f"MI={const:.4g}*N^{power:.4f} "
+                    f"(N in [{fit_nmin}, {fit_nmax if fit_nmax > 0 else 'inf'}))"
+                )
+                fit_params_by_series.setdefault(series_key, {})[estimator] = (
+                    const,
+                    power,
+                )
+
+    external_legend_items: list[tuple[str, str, str, bool]] = []
+    if include_external:
+        ext_colors = ["black", "dimgray", "slategray", "gray"]
+        ext_markers = ["x", "+", "1", "2"]
+        for ext_idx, external_source in enumerate(include_external):
+            ns_external, mi_external = _load_external_mi_data(external_source)
+            source_label = {
+                "cagnetta": "Cagnetta et al.",
+                "kaplan": "Kaplan et al.",
+                "shengqi": "Shengqi et al.",
+                "shengi": "Shengqi et al.",
+            }[external_source]
+            order = np.argsort(ns_external)
+            ns_external = ns_external[order]
+            mi_external = mi_external[order]
+            ext_color = ext_colors[ext_idx % len(ext_colors)]
+            ext_marker = ext_markers[ext_idx % len(ext_markers)]
+            ax.scatter(
+                ns_external,
+                mi_external,
+                color=ext_color,
+                edgecolor=ext_color,
+                marker=ext_marker,
+                s=48,
+                alpha=0.5,
+            )
+            fit_ext = _fit_power_law(ns_external, mi_external, fit_nmin, fit_nmax)
+            fit_window_mask = ns_external >= float(fit_nmin)
+            if fit_nmax > 0:
+                fit_window_mask = fit_window_mask & (ns_external < float(fit_nmax))
+            if fit_ext is not None and np.any(fit_window_mask):
+                const, power = fit_ext
+                fit_ns_min = float(np.min(ns_external[fit_window_mask]))
+                fit_ns_max = float(np.max(ns_external[fit_window_mask]))
+                fit_ns = np.logspace(
+                    np.log10(fit_ns_min),
+                    np.log10(fit_ns_max),
+                    num=200,
+                )
+                fit_curve = const * np.power(fit_ns, power)
+                ax.plot(
+                    fit_ns,
+                    fit_curve,
+                    color=ext_color,
+                    linestyle=":",
+                    linewidth=1.5,
+                    alpha=0.8,
+                )
+                external_label = (
+                    rf"{source_label}: $I(A:B)={const:.3g}\cdot N^{{{power:.3f}}}$"
+                )
+                external_legend_items.append(
+                    (external_label, ext_color, ext_marker, True)
+                )
+            else:
+                external_legend_items.append(
+                    (source_label, ext_color, ext_marker, False)
+                )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(left=1)
+    ax.set_xlabel("N")
+    ax.set_ylabel(r"$I(A:B)$")
+    ax.set_title(title)
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+
+    colorbar = fig.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+        ax=ax,
+        pad=0.02,
+    )
+    colorbar.set_label("hidden_dim")
+
+    legend_handles: list[Line2D] = []
+    for series_key in series_keys:
+        group_name, hidden_dim = series_key
+        estimator_fits = fit_params_by_series.get(series_key, {})
+        if not estimator_fits:
+            continue
+        fit_parts: list[str] = []
+        for estimator in estimators:
+            fit = estimator_fits.get(estimator)
+            if fit is None:
+                continue
+            const, power = fit
+            fit_parts.append(
+                rf"{estimator}: $I(A:B)={const:.3g}\cdot N^{{{power:.3f}}}$"
+            )
+        if not fit_parts:
+            continue
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=cmap(norm(hidden_dim)),
+                linestyle=":",
+                linewidth=1.5,
+                label=(
+                    (
+                        rf"$d_h={hidden_dim}$ [{group_labels.get(group_name, group_name)}], "
+                        if group_labels
+                        else rf"$d_h={hidden_dim}$, "
+                    )
+                    + "; ".join(fit_parts)
+                ),
+            )
+        )
+    for label, color, marker, has_fit in external_legend_items:
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=color,
+                linestyle=":" if has_fit else "-",
+                marker=marker,
+                linewidth=1.5,
+                label=label,
+            )
+        )
+    # if legend_handles:
+    #     ax.legend(
+    #         handles=legend_handles,
+    #         loc="upper center",
+    #         bbox_to_anchor=(0.5, -0.08),
+    #         ncol=1,
+    #         frameon=False,
+    #     )
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fig.tight_layout(rect=(0.0, 0.03, 1.0, 1.0))
+    fig.savefig(out_path, dpi=200, bbox_inches="tight", pad_inches=0.02)
+    print(f"Saved to {out_path}")
+    _show_image(out_path)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--group", type=str, nargs="+", required=True)
+    parser.add_argument(
+        "--estimator",
+        type=str,
+        choices=["direct", "v-club", "n-gram"],
+        nargs="+",
+        default=["direct"],
+        help="One or more estimators: direct v-club n-gram",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional hidden_dim filter(s)",
+    )
+    parser.add_argument(
+        "--max-n",
+        type=int,
+        default=DEFAULT_MAX_N,
+        help="Maximum N to include",
+    )
+    parser.add_argument(
+        "--fit-nmin",
+        type=int,
+        default=FIT_NMIN,
+        help="Min N to include in power-law fits (N >= fit_nmin)",
+    )
+    parser.add_argument(
+        "--fit-nmax",
+        type=int,
+        default=FIT_NMAX,
+        help="Max N to include in power-law fits (N < fit_nmax). Use <=0 for no upper bound",
+    )
+    parser.add_argument(
+        "--sample-source",
+        type=str,
+        choices=["model", "data"],
+        default="model",
+        help="Source of sequences for MI: model samples or cached dataset chunks",
+    )
+    parser.add_argument(
+        "--data-split",
+        type=str,
+        choices=["validation", "train", "test"],
+        default="validation",
+        help="Which cached dataset split to draw chunks from when --sample-source=data",
+    )
+    parser.add_argument(
+        "--data-seed",
+        type=int,
+        default=0,
+        help="RNG seed for selecting data chunks when --sample-source=data",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=10000,
+        help="Number of sampled sequences (used only for --sample-source=model)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=256,
+        help="Batch size for sampling and scoring",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="checkpoints/bipartite_mi_cache",
+        help="Directory for MI cache",
+    )
+    parser.add_argument(
+        "--force-resample",
+        action="store_true",
+        help="Force regeneration of direct caches instead of cache-only mode",
+    )
+    parser.add_argument(
+        "--sanity-check-direct-data",
+        action="store_true",
+        help=(
+            "When --estimator direct and --sample-source data, verify that "
+            "E[log q(B|A)] equals -sum L_n computed from the scored data logps, "
+            "and that the cached log q(B) scalars are consistent with per-position losses."
+        ),
+    )
+    parser.add_argument(
+        "--include-external",
+        type=str,
+        nargs="+",
+        choices=["cagnetta", "kaplan", "shengqi", "shengi"],
+        default=None,
+        help="Overlay one or more external MI curves from externalData/*_mi.csv",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output plot path",
+    )
+    return parser
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    if args.max_n < DEFAULT_MIN_N:
+        raise RuntimeError(f"--max-n must be >= {DEFAULT_MIN_N}")
+    if args.num_samples < 1:
+        raise RuntimeError("--num-samples must be >= 1")
+    if args.batch_size < 1:
+        raise RuntimeError("--batch-size must be >= 1")
+    if args.fit_nmin < 1:
+        raise RuntimeError("--fit-nmin must be >= 1")
+    if bool(getattr(args, "sanity_check_direct_data", False)):
+        if "direct" not in (args.estimator or []):
+            raise RuntimeError("--sanity-check-direct-data requires --estimator direct")
+        if str(getattr(args, "sample_source", "model")) != "data":
+            raise RuntimeError(
+                "--sanity-check-direct-data requires --sample-source data"
+            )
+
+
+def _dedupe_estimators(estimator_args: list[str]) -> list[str]:
+    estimators: list[str] = []
+    for estimator in estimator_args:
+        if estimator not in estimators:
+            estimators.append(estimator)
+    return estimators
 
 
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
     _validate_args(args)
+    estimators = _dedupe_estimators(args.estimator)
 
     n_values = [n for n in DEFAULT_N_VALUES if n <= int(args.max_n)]
     if not n_values:
         raise RuntimeError("No valid N values to evaluate")
 
-    estimators = _dedupe_estimators(args.estimator)
+    groups = list(dict.fromkeys(args.group))
+    group_labels = distinct_group_labels(groups) if len(groups) > 1 else {}
 
     api = wandb.Api()
-    runs = _resolve_group_runs(api, args.group)
-    runs = _filter_runs_by_hidden_dim(runs, args.hidden_dim, args.group)
-
-    all_values: dict[str, dict[int, dict[int, float]]] = {
+    all_values: dict[str, dict[tuple[str, int], dict[int, float]]] = {
         estimator: {} for estimator in estimators
     }
-    for run in tqdm(runs, desc="Runs", unit="run"):
-        cfg = run.config or {}
-        hidden_dim = int(cfg["hidden_dim"])
+    for group_name in groups:
+        runs = _resolve_group_runs(api, group_name)
+        runs = _filter_runs_by_hidden_dim(runs, args.hidden_dim, group_name)
+        for run in tqdm(runs, desc=f"Runs[{group_name}]", unit="run"):
+            cfg = run.config or {}
+            hidden_dim = int(cfg["hidden_dim"])
+            series_key = (group_name, hidden_dim)
 
-        if "sampled" in estimators:
-            all_values["sampled"][hidden_dim] = _compute_lstm_sampled_mi_for_run(
-                run,
-                api,
-                hidden_dim,
-                n_values,
-                num_samples=args.num_samples,
-                batch_size=args.batch_size,
-                cache_dir=args.cache_dir,
-                force_resample=args.force_resample,
-            )
-
-        if "ckl" in estimators or "cjs" in estimators:
-            bos_token_id = int(cfg.get("bos_token_id", 0))
-            sample_key = _sample_cache_key(
-                seq_len=n_values[-1],
-                num_samples=args.num_samples,
-                batch_size=args.batch_size,
-                bos_token_id=bos_token_id,
-            )
-            sample_cache_path, log_q_y_cache_path = _sample_cache_paths(
-                args.cache_dir,
-                run.id,
-                sample_key,
-            )
-            reusable_cache = _find_reusable_complete_cache(
-                cache_dir=args.cache_dir,
-                run_id=run.id,
-                seq_len=n_values[-1],
-                target_num_samples=args.num_samples,
-                batch_size=args.batch_size,
-                bos_token_id=bos_token_id,
-                n_values=n_values,
-            )
-            if reusable_cache is None:
-                raise RuntimeError(
-                    f"No complete cached samples found for hidden_dim={hidden_dim}. "
-                    "Re-run with --force-resample to regenerate."
-                )
-            sample_logps = reusable_cache[0]
-            
-            cached_samples = _load_sample_cache(sample_cache_path)
-            if cached_samples is None:
-                raise RuntimeError(
-                    f"Failed to load cached samples from {sample_cache_path}"
-                )
-            samples, _ = cached_samples
-
-            if "ckl" in estimators or "cjs" in estimators:
-                import jax
-                from models.lstm import LSTMLanguageModel
-                from training.trainer import create_train_state
-
-                ckpt_path = _download_checkpoint_artifact(run.id, api, args.cache_dir)
-                model = LSTMLanguageModel(
-                    hidden_dim=int(cfg["hidden_dim"]),
-                    num_layers=int(cfg["num_layers"]),
-                    vocab_size=int(cfg["vocab_size"]),
-                )
-                rng = jax.random.PRNGKey(0)
-                state_cfg = SimpleNamespace(
-                    batch_size=int(cfg.get("batch_size", 1)),
-                    seq_len=int(cfg.get("seq_len", n_values[-1])),
-                    learning_rate=float(cfg.get("learning_rate", 1e-3)),
-                )
-                state = create_train_state(model, state_cfg, rng)
-                state, restored = _load_checkpoint(ckpt_path, state)
-                ckpt_run_id = restored.get("wandb_run_id")
-                if ckpt_run_id != run.id:
-                    raise RuntimeError(
-                        "Checkpoint/run mismatch: "
-                        f"ckpt_run_id={ckpt_run_id}, run.id={run.id}"
+            if "direct" in estimators:
+                if args.sample_source == "data":
+                    all_values["direct"][series_key] = (
+                        _compute_lstm_direct_mi_for_run_from_data(
+                            run,
+                            api,
+                            hidden_dim,
+                            n_values,
+                            num_samples=args.num_samples,
+                            batch_size=args.batch_size,
+                            cache_dir=args.cache_dir,
+                            force_resample=args.force_resample,
+                            data_split=args.data_split,
+                            data_seed=args.data_seed,
+                            sanity_check=bool(args.sanity_check_direct_data),
+                        )
                     )
-                sample_params = _normalize_params_for_step(
-                    state.params,
-                    int(cfg["num_layers"]),
-                )
-
-                if "ckl" in estimators:
-                    all_values["ckl"][hidden_dim] = _compute_ckl_from_samples(
-                        samples=samples,
-                        sample_logps=sample_logps,
-                        n_values=n_values,
-                        apply_fn=state.apply_fn,
-                        params=sample_params,
+                else:
+                    all_values["direct"][series_key] = _compute_lstm_sampled_mi_for_run(
+                        run,
+                        api,
+                        hidden_dim,
+                        n_values,
+                        num_samples=args.num_samples,
                         batch_size=args.batch_size,
-                        bos_token_id=bos_token_id,
+                        cache_dir=args.cache_dir,
+                        force_resample=args.force_resample,
+                        data_split=args.data_split,
+                        data_seed=args.data_seed,
                     )
-                if "cjs" in estimators:
-                    all_values["cjs"][hidden_dim] = _compute_cjs_from_samples(
-                        samples=samples,
-                        sample_logps=sample_logps,
-                        n_values=n_values,
-                        apply_fn=state.apply_fn,
-                        params=sample_params,
+
+            if "v-club" in estimators:
+                if args.sample_source == "data":
+                    all_values["v-club"][series_key] = (
+                        _compute_lstm_v_club_for_run_from_data(
+                            run,
+                            api,
+                            hidden_dim,
+                            n_values,
+                            num_samples=args.num_samples,
+                            batch_size=args.batch_size,
+                            cache_dir=args.cache_dir,
+                            force_resample=args.force_resample,
+                            data_split=args.data_split,
+                            data_seed=args.data_seed,
+                        )
+                    )
+                else:
+                    all_values["v-club"][series_key] = _compute_lstm_v_club_for_run(
+                        run,
+                        api,
+                        hidden_dim,
+                        n_values,
+                        num_samples=args.num_samples,
                         batch_size=args.batch_size,
-                        bos_token_id=bos_token_id,
+                        cache_dir=args.cache_dir,
+                        force_resample=args.force_resample,
                     )
 
-    extra_series: list[dict[str, Any]] = []
-    if args.hf_model is not None:
-        (
-            hf_num_samples,
-            hf_sample_batch_size,
-            hf_score_batch_size,
-            hf_attn_implementation,
-        ) = _resolve_hf_series_options(args)
-
-        hf_mi_values, hf_max_positions = _compute_hf_sampled_mi_series(
-            model_name=args.hf_model,
-            revision=args.hf_revision,
-            n_values=n_values,
-            num_samples=hf_num_samples,
-            sample_batch_size=hf_sample_batch_size,
-            score_batch_size=hf_score_batch_size,
-            cache_dir=args.cache_dir,
-            seed=args.hf_seed,
-            save_every_batches=args.hf_save_every_batches,
-            token_log_every=args.hf_token_log_every,
-            compile_target=args.hf_compile,
-            compile_mode=args.hf_compile_mode,
-            attn_implementation=hf_attn_implementation,
-            force_resample=args.force_resample,
-        )
-        if hf_max_positions < max(n_values):
-            print(
-                f"HF model context limit={hf_max_positions}; plotting only N <= "
-                f"{hf_max_positions} for {args.hf_model}"
-            )
-        extra_series.append(
-            {
-                "label": (
-                    args.hf_label
-                    if args.hf_label is not None
-                    else f"{args.hf_model} (sampled)"
-                ),
-                "series": hf_mi_values,
-                "color": "black",
-                "linestyle": "-.",
-                "marker": "^",
-            }
-        )
+            if "n-gram" in estimators:
+                all_values["n-gram"][series_key] = _compute_ngram_mi_for_run(
+                    run,
+                    n_values,
+                )
 
     out_path = (
         args.output
         if args.output is not None
-        else f"results/bipartite_mi_{args.group}.png"
+        else f"results/bipartite_mi_{'_'.join(groups)}.png"
     )
     _plot_bipartite_mi(
         all_values,
         estimators,
         out_path,
-        title=f"Bipartite MI (group={args.group})",
-        extra_series=extra_series,
+        title=(
+            "Bipartite MI " f"({', '.join(estimators)}, groups={', '.join(groups)})"
+        ),
+        group_labels=group_labels,
+        include_external=(
+            list(dict.fromkeys(args.include_external))
+            if args.include_external
+            else None
+        ),
+        fit_nmin=args.fit_nmin,
+        fit_nmax=args.fit_nmax,
     )
 
 

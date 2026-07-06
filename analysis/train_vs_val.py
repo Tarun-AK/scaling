@@ -29,6 +29,7 @@ import wandb
 
 WANDB_PROJECT = "tarunadvaith-/scaling"
 TRAIN_AVG_LAST_N = 100
+TEST_FIT_OFFSET = 2.25
 plt.style.use("~/plotStyle.mplstyle")
 
 
@@ -107,7 +108,11 @@ def extract_final_losses(
     return pd.DataFrame(rows).sort_values("hidden_dim")
 
 
-def plot_overfitting(df: pd.DataFrame, out_path: str, fit: bool = True) -> None:
+def plot_overfitting(
+    df: pd.DataFrame,
+    out_path: str,
+    fit: bool = True,
+) -> None:
     if df.empty:
         raise RuntimeError("No data found.")
 
@@ -154,35 +159,70 @@ def plot_overfitting(df: pd.DataFrame, out_path: str, fit: bool = True) -> None:
                 x_fit_data = x[fit_mask]
                 y_fit_data = y[fit_mask]
 
-                def power_law_with_const(dh, L_inf, c, power):
-                    return L_inf + c * np.power(dh, power)
-
-                p0 = [
-                    float(np.min(y_fit_data)),
-                    float(np.max(y_fit_data) - np.min(y_fit_data)),
-                    -0.5,
-                ]
                 try:
-                    popt, _ = curve_fit(
-                        power_law_with_const,
+                    def power_law_with_fixed_offset(dh, c, power):
+                        return TEST_FIT_OFFSET + c * np.power(dh, power)
+
+                    y_shifted = y_fit_data - TEST_FIT_OFFSET
+                    valid_shifted = y_shifted > 0
+                    if np.count_nonzero(valid_shifted) < 2:
+                        continue
+                    x_fit_data = x_fit_data[valid_shifted]
+                    y_fit_data = y_fit_data[valid_shifted]
+
+                    popt, pcov = curve_fit(
+                        power_law_with_fixed_offset,
                         x_fit_data,
                         y_fit_data,
-                        p0=p0,
+                        p0=[float(np.max(y_fit_data) - TEST_FIT_OFFSET), -0.5],
                         maxfev=10_000,
-                        bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, 0]),
+                        bounds=([0, -np.inf], [np.inf, 0]),
                     )
-                    L_inf, c, power = popt
-                    alpha = -power
+                    c, power = popt
+                    fit_fn = power_law_with_fixed_offset
+                    power_idx = 1
+                    fit_name = rf"test fit ($L_\infty={TEST_FIT_OFFSET:.2f}$ fixed)"
+
+                    power_std = np.nan
+                    if (
+                        np.all(np.isfinite(pcov))
+                        and pcov.ndim == 2
+                        and pcov.shape[0] > power_idx
+                        and pcov.shape[1] > power_idx
+                        and float(pcov[power_idx, power_idx]) >= 0.0
+                    ):
+                        power_std = float(np.sqrt(pcov[power_idx, power_idx]))
+                    if np.isfinite(power_std):
+                        fit_label = (
+                            rf"{fit_name} (power={power:.3f}"
+                            rf"$\pm${power_std:.3f}){label_suffix}"
+                        )
+                    else:
+                        fit_label = rf"{fit_name} (power={power:.3f}){label_suffix}"
                     x_fit = np.linspace(x_fit_data.min(), x_fit_data.max(), 200)
-                    y_fit = power_law_with_const(x_fit, L_inf, c, power)
+                    y_fit = fit_fn(x_fit, *popt)
                     plt.plot(
                         x_fit,
                         y_fit,
                         linestyle=":",
                         color=test_color,
                         alpha=0.8,
-                        label=rf"test fit ($\alpha$={alpha:.3f}){label_suffix}",
+                        label=fit_label,
                     )
+                    if np.all(np.isfinite(pcov)):
+                        x_power = np.power(x_fit, power)
+                        jac = np.column_stack([x_power, c * x_power * np.log(x_fit)])
+                        var = np.einsum("ij,jk,ik->i", jac, pcov, jac)
+                        sigma = np.sqrt(np.maximum(var, 0.0))
+                        y_lower = np.maximum(y_fit - sigma, np.finfo(float).tiny)
+                        y_upper = np.maximum(y_fit + sigma, np.finfo(float).tiny)
+                        plt.fill_between(
+                            x_fit,
+                            y_lower,
+                            y_upper,
+                            color=test_color,
+                            alpha=0.15,
+                        )
                 except RuntimeError:
                     pass
     if groups and any(g is not None for g in groups):
@@ -228,6 +268,11 @@ def main() -> None:
         action="store_false",
         help="Disable power-law fit",
     )
+    parser.add_argument(
+        "--fit-without-offset",
+        action="store_true",
+        help="Deprecated; ignored (fit uses fixed offset L_inf=2.25)",
+    )
     parser.set_defaults(fit=True)
     args = parser.parse_args()
 
@@ -240,7 +285,11 @@ def main() -> None:
     else:
         runs = fetch_runs(WANDB_PROJECT, group=None)
         df = extract_final_losses(runs, group=None)
-    plot_overfitting(df, "results/overfitting.png", fit=args.fit)
+    plot_overfitting(
+        df,
+        "results/overfitting.png",
+        fit=args.fit,
+    )
 
 
 if __name__ == "__main__":

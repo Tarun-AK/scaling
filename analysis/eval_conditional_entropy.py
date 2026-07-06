@@ -22,14 +22,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp
+from tqdm import tqdm
 
 import wandb
-from tqdm import tqdm
 from models.lstm import LSTMLanguageModel
 from training.trainer import TrainState, create_train_state
 
 WANDB_PROJECT = "tarunadvaith-/scaling"
-NUM_SAMPLES = 1_000_000
+NUM_SAMPLES = 100_000
 SAMPLE_BATCH_SIZE = 512
 
 
@@ -180,7 +180,9 @@ def compute_conditional_entropy_from_samples(
         log_probs = jax.nn.log_softmax(logits, axis=-1)
         token_logp = jnp.take_along_axis(
             log_probs, targets[:, :, None], axis=-1
-        ).squeeze(-1)  # (batch, seq_len-1)
+        ).squeeze(
+            -1
+        )  # (batch, seq_len-1)
 
         per_position = -jnp.mean(token_logp, axis=0)
         all_metrics.append(np.array(per_position))
