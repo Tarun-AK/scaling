@@ -28,41 +28,47 @@ from analysis.plot_group_labels import distinct_group_labels
 
 WANDB_PROJECT = "tarunadvaith-/scaling"
 DEFAULT_N_VALUES = [
-    6,
-    8,
-    10,
-    12,
+    # 6,
+    # 8,
+    # 10,
+    # 12,
     14,
-    16,
-    20,
-    22,
+    # 16,
+    # 20,
+    # 22,
     26,
-    32,
-    38,
-    44,
+    # 32,
+    # 38,
+    # 44,
     52,
-    62,
-    74,
-    88,
+    # 62,
+    # 74,
+    # 88,
     104,
-    122,
-    146,
+    # 122,
+    # 146,
     172,
-    206,
+    # 206,
     244,
-    288,
-    342,
+    # 288,
+    # 342,
     406,
-    482,
+    # 482,
     572,
-    680,
+    # 680,
     806,
-    958,
+    # 958,
     1136,
-    1348,
-    1600,
-    1800,
+    # 1348,
+    # 1600,
+    # 1800,
     2048,
+    3000,
+    4096,
+    5000,
+    6000,
+    7000,
+    8192,
 ]
 DEFAULT_MIN_N = min(DEFAULT_N_VALUES)
 DEFAULT_MAX_N = 2048
@@ -166,6 +172,8 @@ def _load_data_chunks(
         data = train_np
     elif split == "test":
         data = test_np
+    elif split in {"validation+test", "test+validation"}:
+        data = np.concatenate([val_np, test_np], axis=0)
     else:
         data = val_np
 
@@ -1118,10 +1126,8 @@ def _compute_lstm_sampled_mi_for_run(
             n_values=n_values,
         )
         if reusable_cache is None:
-            raise RuntimeError(
-                "No complete cached direct MI found for "
-                f"hidden_dim={hidden_dim}. Re-run with --force-resample to regenerate."
-            )
+            print("Skipping hidden_dim=" f"{hidden_dim}: no cached direct MI available")
+            return {}
         (
             reusable_sample_logps,
             reusable_log_q_y_means_by_n,
@@ -1135,10 +1141,11 @@ def _compute_lstm_sampled_mi_for_run(
             reusable_sample_logps,
         )
         if not available_n_values:
-            raise RuntimeError(
-                "Cached direct artifacts have no usable N values for "
-                f"hidden_dim={hidden_dim}. Re-run with --force-resample to regenerate."
+            print(
+                "Skipping hidden_dim="
+                f"{hidden_dim}: cached direct MI has no usable N values"
             )
+            return {}
         if len(available_n_values) < len(n_values):
             print(
                 "Using cached direct MI subset for hidden_dim="
@@ -1256,37 +1263,44 @@ def _compute_lstm_direct_mi_for_run_from_data(
         data_key,
     )
 
-    if (
-        (not force_resample)
-        and os.path.exists(sample_cache_path)
-        and os.path.exists(log_q_y_cache_path)
-    ):
-        cached = _load_data_sample_cache(sample_cache_path)
-        if cached is not None:
-            samples, sample_logps = cached
-            log_q_y_means_by_n = _load_log_q_y_mean_cache(log_q_y_cache_path)
-            available_n_values = [
-                int(n)
-                for n in n_values
-                if int(n) in log_q_y_means_by_n and int(n) <= int(sample_logps.shape[1])
-            ]
-            if available_n_values:
-                print(
-                    "Using cached data direct MI for hidden_dim="
-                    f"{hidden_dim} from {os.path.basename(sample_cache_path)} "
-                    f"(num_samples={samples.shape[0]})"
-                )
-                if sanity_check:
-                    _sanity_check_direct_data_terms(
-                        sample_logps=sample_logps,
-                        log_q_y_means_by_n=log_q_y_means_by_n,
-                        n_values=available_n_values,
+    if not force_resample:
+        if os.path.exists(sample_cache_path) and os.path.exists(log_q_y_cache_path):
+            cached = _load_data_sample_cache(sample_cache_path)
+            if cached is not None:
+                samples, sample_logps = cached
+                log_q_y_means_by_n = _load_log_q_y_mean_cache(log_q_y_cache_path)
+                available_n_values = [
+                    int(n)
+                    for n in n_values
+                    if int(n) in log_q_y_means_by_n
+                    and int(n) <= int(sample_logps.shape[1])
+                ]
+                if available_n_values:
+                    print(
+                        "Using cached data direct MI for hidden_dim="
+                        f"{hidden_dim} from {os.path.basename(sample_cache_path)} "
+                        f"(num_samples={samples.shape[0]})"
                     )
-                return _compute_bipartite_mi_from_sampled_q(
-                    sample_logps=sample_logps,
-                    n_values=available_n_values,
-                    log_q_y_means_by_n=log_q_y_means_by_n,
+                    if sanity_check:
+                        _sanity_check_direct_data_terms(
+                            sample_logps=sample_logps,
+                            log_q_y_means_by_n=log_q_y_means_by_n,
+                            n_values=available_n_values,
+                        )
+                    return _compute_bipartite_mi_from_sampled_q(
+                        sample_logps=sample_logps,
+                        n_values=available_n_values,
+                        log_q_y_means_by_n=log_q_y_means_by_n,
+                    )
+                print(
+                    "Skipping hidden_dim="
+                    f"{hidden_dim}: cached data direct MI has no usable N values"
                 )
+                return {}
+        print(
+            "Skipping hidden_dim=" f"{hidden_dim}: no cached data direct MI available"
+        )
+        return {}
 
     import jax
 
@@ -1413,6 +1427,13 @@ def _compute_lstm_v_club_for_run_from_data(
                     f"{hidden_dim} from {os.path.basename(vclub_cache_path)}"
                 )
                 return {int(n): float(cached_vclub[int(n)]) for n in available_n_values}
+            print(
+                "Skipping hidden_dim="
+                f"{hidden_dim}: cached data v-club has no usable N values"
+            )
+            return {}
+        print("Skipping hidden_dim=" f"{hidden_dim}: no cached data v-club available")
+        return {}
 
     import jax
 
@@ -1541,10 +1562,10 @@ def _compute_lstm_v_club_for_run(
             n_values=n_values,
         )
     if reusable_cache is None:
-        raise RuntimeError(
-            "No complete cached direct artifacts found for "
-            f"hidden_dim={hidden_dim}. Re-run with --force-resample."
+        print(
+            "Skipping hidden_dim=" f"{hidden_dim}: no cached direct artifacts available"
         )
+        return {}
 
     sample_logps = reusable_cache[0]
     sample_cache_path = reusable_cache[3]
@@ -1961,9 +1982,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-split",
         type=str,
-        choices=["validation", "train", "test"],
+        choices=["validation", "train", "test", "validation+test", "test+validation"],
         default="validation",
-        help="Which cached dataset split to draw chunks from when --sample-source=data",
+        help=(
+            "Which cached dataset split to draw chunks from when --sample-source=data; "
+            "validation+test concatenates both splits"
+        ),
     )
     parser.add_argument(
         "--data-seed",
@@ -2073,23 +2097,23 @@ def main() -> None:
 
             if "direct" in estimators:
                 if args.sample_source == "data":
-                    all_values["direct"][series_key] = (
-                        _compute_lstm_direct_mi_for_run_from_data(
-                            run,
-                            api,
-                            hidden_dim,
-                            n_values,
-                            num_samples=args.num_samples,
-                            batch_size=args.batch_size,
-                            cache_dir=args.cache_dir,
-                            force_resample=args.force_resample,
-                            data_split=args.data_split,
-                            data_seed=args.data_seed,
-                            sanity_check=bool(args.sanity_check_direct_data),
-                        )
+                    direct_values = _compute_lstm_direct_mi_for_run_from_data(
+                        run,
+                        api,
+                        hidden_dim,
+                        n_values,
+                        num_samples=args.num_samples,
+                        batch_size=args.batch_size,
+                        cache_dir=args.cache_dir,
+                        force_resample=args.force_resample,
+                        data_split=args.data_split,
+                        data_seed=args.data_seed,
+                        sanity_check=bool(args.sanity_check_direct_data),
                     )
+                    if direct_values:
+                        all_values["direct"][series_key] = direct_values
                 else:
-                    all_values["direct"][series_key] = _compute_lstm_sampled_mi_for_run(
+                    direct_values = _compute_lstm_sampled_mi_for_run(
                         run,
                         api,
                         hidden_dim,
@@ -2101,25 +2125,27 @@ def main() -> None:
                         data_split=args.data_split,
                         data_seed=args.data_seed,
                     )
+                    if direct_values:
+                        all_values["direct"][series_key] = direct_values
 
             if "v-club" in estimators:
                 if args.sample_source == "data":
-                    all_values["v-club"][series_key] = (
-                        _compute_lstm_v_club_for_run_from_data(
-                            run,
-                            api,
-                            hidden_dim,
-                            n_values,
-                            num_samples=args.num_samples,
-                            batch_size=args.batch_size,
-                            cache_dir=args.cache_dir,
-                            force_resample=args.force_resample,
-                            data_split=args.data_split,
-                            data_seed=args.data_seed,
-                        )
+                    vclub_values = _compute_lstm_v_club_for_run_from_data(
+                        run,
+                        api,
+                        hidden_dim,
+                        n_values,
+                        num_samples=args.num_samples,
+                        batch_size=args.batch_size,
+                        cache_dir=args.cache_dir,
+                        force_resample=args.force_resample,
+                        data_split=args.data_split,
+                        data_seed=args.data_seed,
                     )
+                    if vclub_values:
+                        all_values["v-club"][series_key] = vclub_values
                 else:
-                    all_values["v-club"][series_key] = _compute_lstm_v_club_for_run(
+                    vclub_values = _compute_lstm_v_club_for_run(
                         run,
                         api,
                         hidden_dim,
@@ -2129,6 +2155,8 @@ def main() -> None:
                         cache_dir=args.cache_dir,
                         force_resample=args.force_resample,
                     )
+                    if vclub_values:
+                        all_values["v-club"][series_key] = vclub_values
 
             if "n-gram" in estimators:
                 all_values["n-gram"][series_key] = _compute_ngram_mi_for_run(

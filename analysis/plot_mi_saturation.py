@@ -50,27 +50,20 @@ def _show_image(path: str) -> None:
     subprocess.run(["kitten", "icat", "--clear"], check=False)
 
 
-def _mi_saturation_value(
-    series: dict[int, float], saturation_n_values: list[int]
-) -> float:
-    if not saturation_n_values:
-        raise RuntimeError("No saturation N values provided")
-    values: list[float] = []
-    for n in saturation_n_values:
-        if n not in series:
-            raise RuntimeError(f"Missing MI value at N={n}")
-        value = float(series[n])
-        if not np.isfinite(value):
-            raise RuntimeError(f"Non-finite MI value at N={n}")
-        values.append(value)
-    return float(np.mean(np.array(values, dtype=float)))
+def _largest_available_mi_value(series: dict[int, float]) -> tuple[int, float]:
+    if not series:
+        raise RuntimeError("No MI values available")
+    largest_n = max(series)
+    value = float(series[largest_n])
+    if not np.isfinite(value):
+        raise RuntimeError(f"Non-finite MI value at N={largest_n}")
+    return largest_n, value
 
 
 def _plot_mi_saturation(
     rows: list[dict[str, float]],
     out_path: str,
     title: str,
-    saturation_n_values: list[int],
 ) -> None:
     if not rows:
         raise RuntimeError("No rows to plot")
@@ -173,7 +166,7 @@ def main() -> None:
     parser.add_argument(
         "--data-split",
         type=str,
-        choices=["validation", "train", "test"],
+        choices=["validation", "train", "test", "validation+test", "test+validation"],
         default="validation",
         help="Which cached dataset split to draw chunks from when --sample-source=data",
     )
@@ -267,17 +260,7 @@ def main() -> None:
                 "--sanity-check-direct-data requires --sample-source data"
             )
 
-    saturation_n_values = sorted(set(int(n) for n in args.saturation_n_values))
-    if not saturation_n_values:
-        raise RuntimeError("--saturation-n-values must contain at least one N")
-    if any(n < DEFAULT_MIN_N for n in saturation_n_values):
-        raise RuntimeError(f"--saturation-n-values must be >= {DEFAULT_MIN_N}")
-    if any(n > int(args.max_n) for n in saturation_n_values):
-        raise RuntimeError("All --saturation-n-values must be <= --max-n")
-
-    # Only compute the N values needed for saturation extraction.
-    # This avoids triggering unnecessary cache misses at larger N.
-    n_values = list(saturation_n_values)
+    n_values = [n for n in DEFAULT_N_VALUES if n <= int(args.max_n)]
     if not n_values:
         raise RuntimeError("No valid N values to evaluate")
 
@@ -325,21 +308,27 @@ def main() -> None:
                     cache_dir=args.cache_dir,
                     force_resample=args.force_resample,
                 )
-            mi_sat = _mi_saturation_value(mi_series, saturation_n_values)
+            if not mi_series:
+                print(
+                    "Skipping hidden_dim="
+                    f"{hidden_dim}: no cached MI values available"
+                )
+                continue
+            saturation_n, mi_sat = _largest_available_mi_value(mi_series)
             rows.append(
                 {
                     "group": group_name,
                     "hidden_dim": float(hidden_dim),
                     "mi_sat": mi_sat,
+                    "saturation_n": float(saturation_n),
                 }
             )
 
     rows.sort(key=lambda row: row["hidden_dim"])
-    joined_ns = ",".join(str(n) for n in saturation_n_values)
     for row in rows:
         print(
             f"hidden_dim={row['hidden_dim']:.0f}, "
-            f"{estimator}_mean_I(A:B)(N in {{{joined_ns}}})={row['mi_sat']:.6g}"
+            f"{estimator}_I(A:B)(N={int(row['saturation_n'])})={row['mi_sat']:.6g}"
         )
 
     out_path = (
@@ -351,7 +340,6 @@ def main() -> None:
         rows,
         out_path,
         title=f"{','.join(groups)} ({estimator})",
-        saturation_n_values=saturation_n_values,
     )
 
 

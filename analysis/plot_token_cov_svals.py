@@ -29,6 +29,7 @@ from tqdm import tqdm
 import wandb
 from analysis.plot_bipartite_mi import _filter_runs_by_hidden_dim, _resolve_group_runs
 from analysis.plot_group_labels import distinct_group_labels
+from data.dataset import load_splits_as_arrays
 
 plt.style.use("~/plotStyle.mplstyle")
 
@@ -125,6 +126,61 @@ def _choose_data_sample_cache(*, cache_dir: str, run_id: str) -> str:
         sample_source="data",
         parser_fn=_parse_data_sample_cache,
     )
+
+
+def _load_data_split_samples(
+    cfg: dict,
+    split: str,
+) -> np.ndarray:
+    dataset_name = str(cfg["dataset_name"])
+    dataset_config = cfg.get("dataset_config")
+    dataset_path = cfg.get("dataset_path")
+    seq_len = int(cfg["seq_len"])
+    vocab_size = int(cfg["vocab_size"])
+    cache_dir = str(cfg.get("cache_dir", "data/cache"))
+    require_cache = bool(cfg.get("require_cached_data", True))
+    tokenize_batch_size = int(cfg.get("tokenize_batch_size", 32))
+    tokenizer_path = str(cfg.get("tokenizer_path", "data/tokenizer/tokenizer.json"))
+
+    train_np, val_np, test_np = load_splits_as_arrays(
+        dataset_name=dataset_name,
+        dataset_config=dataset_config,
+        seq_len=seq_len,
+        vocab_size=vocab_size,
+        cache_dir=cache_dir,
+        require_cache=require_cache,
+        tokenize_batch_size=tokenize_batch_size,
+        tokenizer_path=tokenizer_path,
+        dataset_path=str(dataset_path) if dataset_path is not None else None,
+    )
+
+    if split == "train":
+        return np.asarray(train_np, dtype=np.int32)
+    if split == "validation":
+        return np.asarray(val_np, dtype=np.int32)
+    if split == "test":
+        return np.asarray(test_np, dtype=np.int32)
+    if split == "all":
+        return np.asarray(
+            np.concatenate([train_np, val_np, test_np], axis=0),
+            dtype=np.int32,
+        )
+    raise RuntimeError(f"Unsupported data split: {split}")
+
+
+def _load_data_split_samples_from_args(args: argparse.Namespace) -> np.ndarray:
+    cfg = {
+        "dataset_name": args.dataset_name,
+        "dataset_config": args.dataset_config,
+        "dataset_path": args.dataset_path,
+        "seq_len": args.seq_len,
+        "vocab_size": args.vocab_size,
+        "cache_dir": args.dataset_cache_dir,
+        "require_cached_data": args.require_cached_data,
+        "tokenize_batch_size": args.tokenize_batch_size,
+        "tokenizer_path": args.tokenizer_path,
+    }
+    return _load_data_split_samples(cfg, args.data_split)
 
 
 def _load_samples_only(sample_cache_path: str) -> np.ndarray:
@@ -293,6 +349,61 @@ def _compute_curve_for_run(
     return n_values, svals
 
 
+def _compute_data_curve_for_run(
+    *,
+    cfg: dict,
+    data_split: str,
+    max_n: int | None,
+    tol: float,
+    maxiter: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    samples = _load_data_split_samples(cfg, data_split)
+    vocab_size = int(cfg["vocab_size"])
+    return _compute_data_curve_from_samples(
+        samples=samples,
+        vocab_size=vocab_size,
+        max_n=max_n,
+        tol=tol,
+        maxiter=maxiter,
+        data_split=data_split,
+    )
+
+
+def _compute_data_curve_from_samples(
+    *,
+    samples: np.ndarray,
+    vocab_size: int,
+    max_n: int | None,
+    tol: float,
+    maxiter: int,
+    data_split: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    seq_len = int(samples.shape[1])
+    pairs = _first_token_pairs(seq_len)
+    if max_n is not None:
+        pairs = [item for item in pairs if int(item[0]) <= int(max_n)]
+    if not pairs:
+        raise RuntimeError("No valid first-token pairs for requested settings")
+
+    cache_lookup: dict[int, float] = {}
+    for n_between, i, j in tqdm(
+        pairs, desc=f"data[{data_split}] n", unit="pair", leave=False
+    ):
+        left = np.asarray(samples[:, i], dtype=np.int32)
+        right = np.asarray(samples[:, j], dtype=np.int32)
+        cache_lookup[int(n_between)] = _largest_singular_value(
+            left_tokens=left,
+            right_tokens=right,
+            vocab_size=vocab_size,
+            tol=tol,
+            maxiter=maxiter,
+        )
+
+    n_values = np.array(sorted(int(item[0]) for item in pairs), dtype=np.int32)
+    svals = np.array([float(cache_lookup[int(n)]) for n in n_values], dtype=np.float64)
+    return n_values, svals
+
+
 def _plot_curves(
     curves_by_series: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]],
     data_curve_by_group: dict[str, tuple[np.ndarray, np.ndarray]],
@@ -377,13 +488,79 @@ def _plot_curves(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--group", type=str, nargs="+", required=True)
+    parser.add_argument("--group", type=str, nargs="+", default=None)
+    parser.add_argument(
+        "--data-only",
+        action="store_true",
+        help="Plot only a data curve using the training-script dataset loader",
+    )
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default="openwebtext",
+        help="Dataset name for --data-only mode",
+    )
+    parser.add_argument(
+        "--dataset-config",
+        type=str,
+        default=None,
+        help="Dataset config for --data-only mode",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default="openwebtext",
+        help="Dataset path for --data-only mode",
+    )
+    parser.add_argument(
+        "--dataset-cache-dir",
+        type=str,
+        default="data/openwebtext_cache",
+        help="Cache dir for tokenized dataset splits in --data-only mode",
+    )
+    parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=8192,
+        help="Sequence length for --data-only mode",
+    )
+    parser.add_argument(
+        "--vocab-size",
+        type=int,
+        default=10000,
+        help="Vocabulary size for --data-only mode",
+    )
+    parser.add_argument(
+        "--tokenizer-path",
+        type=str,
+        default="openwebtext/tokenizer/tokenizer.json",
+        help="Tokenizer path for --data-only mode",
+    )
+    parser.add_argument(
+        "--require-cached-data",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require cached tokenized splits in --data-only mode",
+    )
+    parser.add_argument(
+        "--tokenize-batch-size",
+        type=int,
+        default=32,
+        help="Tokenization batch size for --data-only mode",
+    )
     parser.add_argument(
         "--hidden-dim",
         type=int,
         nargs="+",
         default=None,
         help="Optional hidden_dim filter(s)",
+    )
+    parser.add_argument(
+        "--data-split",
+        type=str,
+        choices=["validation", "train", "test", "all"],
+        default="validation",
+        help="Cached dataset split to use for the data overlay",
     )
     parser.add_argument(
         "--cache-dir",
@@ -406,6 +583,28 @@ def main() -> None:
         help="Output plot path",
     )
     args = parser.parse_args()
+
+    if args.data_only:
+        data_samples = _load_data_split_samples_from_args(args)
+        data_curve = _compute_data_curve_from_samples(
+            samples=data_samples,
+            vocab_size=args.vocab_size,
+            data_split=args.data_split,
+            max_n=args.max_n,
+            tol=args.svd_tol,
+            maxiter=args.svd_maxiter,
+        )
+        out_path = args.output or f"results/token_cov_svals_data_{args.data_split}.png"
+        _plot_curves(
+            {},
+            {"data": data_curve},
+            out_path,
+            title=f"Largest singular value of token covariance (data={args.data_split})",
+        )
+        return
+
+    if not args.group:
+        raise RuntimeError("--group is required unless --data-only is set")
 
     api = wandb.Api()
     groups = list(dict.fromkeys(args.group))
@@ -454,27 +653,23 @@ def main() -> None:
         data_curve = None
         for run in runs:
             cfg = run.config or {}
-            vocab_size = int(cfg["vocab_size"])
             try:
-                data_sample_cache_path = _choose_data_sample_cache(
-                    cache_dir=args.cache_dir,
-                    run_id=run.id,
+                data_curve = _compute_data_curve_for_run(
+                    cfg=cfg,
+                    data_split=args.data_split,
+                    max_n=args.max_n,
+                    tol=args.svd_tol,
+                    maxiter=args.svd_maxiter,
                 )
-            except RuntimeError:
+                print(
+                    f"group={group_name}: using dataset split '{args.data_split}' for overlay"
+                )
+                break
+            except Exception as exc:
+                print(
+                    f"skip data overlay for group={group_name} hidden_dim={int(cfg.get('hidden_dim', -1))}: {exc}"
+                )
                 continue
-            print(
-                f"group={group_name}: using data sample cache "
-                f"{os.path.basename(data_sample_cache_path)} for overlay"
-            )
-            data_curve = _compute_curve_for_run(
-                sample_cache_path=data_sample_cache_path,
-                vocab_size=vocab_size,
-                max_n=args.max_n,
-                tol=args.svd_tol,
-                maxiter=args.svd_maxiter,
-                force_recompute=bool(args.force_recompute),
-            )
-            break
 
         if data_curve is None:
             print(f"skip data overlay for group={group_name}: no data sample cache found")

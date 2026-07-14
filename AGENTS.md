@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a Python machine learning project using JAX/Flax for LSTM language model scaling experiments. It uses Hydra for configuration management and Weights & Biases for experiment tracking.
+This is a Python machine learning project using JAX/Flax for language model scaling experiments. It now supports both Mamba and Transformer models, uses Hydra for configuration management, and Weights & Biases for experiment tracking.
 
 ## Tech Stack
 
@@ -33,6 +33,17 @@ python -m experiments.scaling_hidden_dim
 
 # Hydra multirun sweep
 python -m experiments.scaling_hidden_dim -m --config-name sweep_hidden_dim
+
+# OpenWebText 5M/120k preprocessing
+.venv/bin/python data/preprocess_openwebtext.py --output-dir openwebtext_5m
+
+# Train tokenizer variants
+.venv/bin/python data/train_tokenizer.py
+
+# Common analysis entry points
+.venv/bin/python analysis/plot_ngrams.py
+.venv/bin/python analysis/plot_mi_saturation.py
+.venv/bin/python analysis/plot_token_cov_svals.py --data-only
 ```
 
 ### Linting
@@ -147,14 +158,22 @@ def train_step(state: TrainState, batch: jax.Array) -> Tuple[TrainState, Dict[st
 scaling/
 ├── configs/              # Hydra YAML configs
 │   ├── base.yaml
+│   ├── openwebtext.yaml
 │   └── sweep_hidden_dim.yaml
 ├── data/                 # Data loading & tokenization
 │   ├── dataset.py
 │   ├── dataloader.py
+│   ├── convert_openwebtext_tokenizer.py
+│   ├── openwebtext.py
+│   ├── pg19.py
+│   ├── preprocess_openwebtext.py
+│   ├── preprocess_wikitext.py
 │   └── train_tokenizer.py
 ├── models/               # Model definitions
 │   ├── __init__.py
-│   └── lstm.py
+│   ├── lstm.py
+│   ├── mamba.py
+│   └── transformer.py
 ├── training/             # Training logic
 │   ├── trainer.py
 │   ├── loss.py
@@ -162,7 +181,16 @@ scaling/
 ├── experiments/          # Entry points
 │   └── scaling_hidden_dim.py
 ├── analysis/             # Analysis scripts
+│   ├── backfill_direct_data_log_qy.py
+│   ├── plot_L.py
+│   ├── plot_L_infinity.py
+│   ├── plot_bipartite_mi.py
+│   ├── plot_group_labels.py
+│   ├── plot_mi_saturation.py
 │   ├── plot_scaling.py
+│   ├── plot_token_cov_svals.py
+│   ├── plot_token_mi_digamma.py
+│   ├── scaling_collapse.py
 │   └── plot_ngrams.py
 ├── checkpoints/          # Model checkpoints
 ├── outputs/              # Hydra output directories
@@ -179,10 +207,11 @@ scaling/
 
 1. Edit or create a config in `configs/`
 2. Run: `python -m experiments.scaling_hidden_dim hidden_dim=512`
+3. For OpenWebText runs, keep `dataset_path` pointed at a directory containing `owt_train.txt` and `owt_valid.txt`
 
 ### Adding a New Model
 
-1. Create `models/your_model.py` following `models/lstm.py` pattern
+1. Create `models/your_model.py` following `models/lstm.py`, `models/mamba.py`, or `models/transformer.py`
 2. Use Flax `nn.Module` with `@nn.compact` decorator
 3. Import and use in `training/trainer.py`
 
@@ -201,6 +230,8 @@ Configs are in `configs/`. Override values via command line:
 ```bash
 python -m experiments.scaling_hidden_dim hidden_dim=256 num_epochs=20
 ```
+
+OpenWebText data is loaded from local text files, not downloaded at train time. The loader expects `owt_train.txt` and `owt_valid.txt` under `dataset_path`.
 
 ---
 

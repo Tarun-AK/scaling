@@ -34,6 +34,21 @@ def power_law_no_offset(n, c, power):
     return c * np.power(n, power)
 
 
+def _param_stds(pcov: np.ndarray | None) -> np.ndarray | None:
+    if pcov is None or not np.all(np.isfinite(pcov)):
+        return None
+    diag = np.diag(pcov)
+    if not np.all(np.isfinite(diag)):
+        return None
+    return np.sqrt(np.clip(diag, 0.0, np.inf))
+
+
+def _format_power(power: float, power_err: float | None) -> str:
+    if power_err is None or not np.isfinite(power_err):
+        return f"{power:.3f}"
+    return f"{power:.3f}±{power_err:.3f}"
+
+
 plt.style.use("~/plotStyle.mplstyle")
 Y_LIM_MIN = float(np.sqrt(1e-3 * 1e-2))
 
@@ -234,7 +249,7 @@ def plot_ngrams(
                         losses_fit = y_values[:fit_points]
                         try:
                             p0 = [max(float(losses_fit[0]), 1e-8), -1.0]
-                            popt, _ = curve_fit(
+                            popt, pcov = curve_fit(
                                 power_law_no_offset,
                                 ns_fit,
                                 losses_fit,
@@ -243,15 +258,22 @@ def plot_ngrams(
                                 bounds=([0, -np.inf], [np.inf, np.inf]),
                             )
                             c, power = popt
+                            power_stds = _param_stds(pcov)
+                            power_err = (
+                                float(power_stds[1]) if power_stds is not None else None
+                            )
                             fit_success = True
                             fit_label = (
                                 rf"{dataset}: "
-                                rf"$-\Delta L_n={c:.3g}\cdot n^{{{power:.3f}}}$ "
+                                rf"$-\Delta L_n={c:.3g}\cdot n^{{{_format_power(power, power_err)}}}$ "
                                 rf"(fit first {fit_points})"
                             )
                             print(
                                 f"hd={hidden_dim}, {dataset}: diff fit first {fit_points} "
                                 f"c={c:.4f}, power={power:.4f}"
+                                + (
+                                    f"±{power_err:.4f}" if power_err is not None else ""
+                                )
                             )
                         except (RuntimeError, ValueError) as e:
                             print(
@@ -299,7 +321,7 @@ def plot_ngrams(
                     try:
                         if fit_no_offset:
                             p0 = [max(losses_fit[0], 1e-8), -0.5]
-                            popt, _ = curve_fit(
+                            popt, pcov = curve_fit(
                                 power_law_no_offset,
                                 ns_fit,
                                 losses_fit,
@@ -308,16 +330,23 @@ def plot_ngrams(
                                 bounds=([0, -np.inf], [np.inf, 0]),
                             )
                             c, power = popt
+                            power_stds = _param_stds(pcov)
+                            power_err = (
+                                float(power_stds[1]) if power_stds is not None else None
+                            )
                             L_inf = 0.0
                             print(
                                 f"hd={hidden_dim}, {dataset}: c={c:.4f}, power={power:.4f}"
+                                + (
+                                    f"±{power_err:.4f}" if power_err is not None else ""
+                                )
                             )
                             fit_label = (
-                                rf"{dataset}: $L_n={c:.3g}\cdot n^{{{power:.3f}}}$"
+                                rf"{dataset}: $L_n={c:.3g}\cdot n^{{{_format_power(power, power_err)}}}$"
                             )
                         else:
                             p0 = [losses_fit[-1], losses_fit[0] - losses_fit[-1], -0.5]
-                            popt, _ = curve_fit(
+                            popt, pcov = curve_fit(
                                 power_law,
                                 ns_fit,
                                 losses_fit,
@@ -326,10 +355,17 @@ def plot_ngrams(
                                 bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, 0]),
                             )
                             L_inf, c, power = popt
+                            power_stds = _param_stds(pcov)
+                            power_err = (
+                                float(power_stds[2]) if power_stds is not None else None
+                            )
                             print(
                                 f"hd={hidden_dim}, {dataset}: L_inf={L_inf:.4f}, c={c:.4f}, power={power:.4f}"
+                                + (
+                                    f"±{power_err:.4f}" if power_err is not None else ""
+                                )
                             )
-                            fit_label = rf"{dataset}: $L_n={c:.3g}\cdot n^{{{power:.3f}}}+{L_inf:.3g}$"
+                            fit_label = rf"{dataset}: $L_n={c:.3g}\cdot n^{{{_format_power(power, power_err)}}}+{L_inf:.3g}$"
                         fit_success = True
                     except (RuntimeError, ValueError) as e:
                         print(
@@ -542,7 +578,7 @@ def plot_ngrams(
                     try:
                         if fit_no_offset:
                             p0 = [max(losses_fit[0], 1e-8), -0.5]
-                            popt, _ = curve_fit(
+                            popt, pcov = curve_fit(
                                 power_law_no_offset,
                                 ns_fit,
                                 losses_fit,
@@ -551,19 +587,26 @@ def plot_ngrams(
                                 bounds=([0, -np.inf], [np.inf, 0]),
                             )
                             c, power = popt
+                            power_stds = _param_stds(pcov)
+                            power_err = (
+                                float(power_stds[1]) if power_stds is not None else None
+                            )
                             L_inf = 0.0
                             print(
                                 f"hd={hidden_dim}, {dataset}: c={c:.4f}, power={power:.4f}"
+                                + (
+                                    f"±{power_err:.4f}" if power_err is not None else ""
+                                )
                             )
                             fit_label = (
                                 rf"$d_h={hidden_dim}$"
                                 + (rf" [{group_label}]" if group_label is not None else "")
                                 + ": "
-                                rf"$L_n={c:.3g}\cdot n^{{{power:.3f}}}$"
+                                rf"$L_n={c:.3g}\cdot n^{{{_format_power(power, power_err)}}}$"
                             )
                         else:
                             p0 = [losses_fit[-1], losses_fit[0] - losses_fit[-1], -0.5]
-                            popt, _ = curve_fit(
+                            popt, pcov = curve_fit(
                                 power_law,
                                 ns_fit,
                                 losses_fit,
@@ -572,14 +615,21 @@ def plot_ngrams(
                                 bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, 0]),
                             )
                             L_inf, c, power = popt
+                            power_stds = _param_stds(pcov)
+                            power_err = (
+                                float(power_stds[2]) if power_stds is not None else None
+                            )
                             print(
                                 f"hd={hidden_dim}, {dataset}: L_inf={L_inf:.4f}, c={c:.4f}, power={power:.4f}"
+                                + (
+                                    f"±{power_err:.4f}" if power_err is not None else ""
+                                )
                             )
                             fit_label = (
                                 rf"$d_h={hidden_dim}$"
                                 + (rf" [{group_label}]" if group_label is not None else "")
                                 + ": "
-                                rf"$L_n={c:.3g}\cdot n^{{{power:.3f}}}+{L_inf:.3g}$"
+                                rf"$L_n={c:.3g}\cdot n^{{{_format_power(power, power_err)}}}+{L_inf:.3g}$"
                             )
                         fit_success = True
                     except (RuntimeError, ValueError) as e:
