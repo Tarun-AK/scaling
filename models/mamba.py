@@ -132,17 +132,6 @@ def _ssd_forward(
 
     d_skip_term = d_skip.astype(x_padded.dtype)
 
-    def _combine(
-        left: tuple[jax.Array, jax.Array],
-        right: tuple[jax.Array, jax.Array],
-    ) -> tuple[jax.Array, jax.Array]:
-        a_left, b_left = left
-        a_right, b_right = right
-        return (
-            a_right * a_left,
-            b_right + a_right[..., None, None] * b_left,
-        )
-
     def _chunk_step(
         carry_state: jax.Array,
         chunk_inputs: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
@@ -151,20 +140,26 @@ def _ssd_forward(
         # single outer transpose above -- no per-iteration swap needed here.
         alpha_t, dt_t, b_t, c_t, x_t = chunk_inputs
 
-        # dt_t: (t, b, h)   x_t: (t, b, h, p)   b_t: (t, b, n)
-        # -> state_input_t: (t, b, h, p, n)
-        # The head axis 'h' only appears in dt_t/x_t's subscripts, so
-        # jnp.einsum broadcasts b_t across heads on the fly instead of us
-        # ever materializing a (t, b, h, n)-shaped copy of b_t.
-        state_input_t = jnp.einsum("tbh,tbhp,tbn->tbhpn", dt_t, x_t, b_t)
+        # Intra-chunk term via the SSD "dual form": a causal decay matrix
+        # built from a cumulative sum in log-space (`_segsum`), combined
+        # with the (C, B) score, contracted against X via two batched
+        # matmuls. This is what the Mamba-2 SSD algorithm is designed
+        # around -- it puts the O(chunk_size^2) intra-chunk work on the
+        # accelerator's matmul units, instead of walking an
+        # O(chunk_size * log(chunk_size))-deep chain of dependent
+        # elementwise steps (jax.lax.associative_scan) over a full
+        # (t, b, h, p, n)-shaped state tensor.
+        a_dt_t = a.astype(dt_t.dtype)[None, None, :] * dt_t  # (t, b, h)
+        decay_log = _segsum(jnp.transpose(a_dt_t, (1, 2, 0)))  # (b, h, t, t)
+        decay = jnp.transpose(jnp.exp(decay_log), (2, 3, 0, 1))  # (t, s, b, h)
 
-        alpha_prefix, state_prefix = jax.lax.associative_scan(
-            _combine,
-            (alpha_t, state_input_t),
-            axis=0,
-        )
-        # c_t: (t, b, n), state_prefix: (t, b, h, p, n) -> (t, b, h, p)
-        local_y = jnp.einsum("tbn,tbhpn->tbhp", c_t, state_prefix)
+        # cb[t, s, b]: shared (group=1) C-B score -- see the docstring above
+        # on why b_t/c_t stay un-broadcast over heads.
+        cb = jnp.einsum("tbn,sbn->tsb", c_t, b_t)
+        gate = cb[:, :, :, None] * decay * dt_t[None, :, :, :]  # (t, s, b, h)
+        local_y = jnp.einsum("tsbh,sbhp->tbhp", gate, x_t)
+
+        alpha_prefix = jnp.cumprod(alpha_t, axis=0)  # (t, b, h)
         carry_y = alpha_prefix[..., None] * jnp.einsum(
             "tbn,bhpn->tbhp",
             c_t,
@@ -172,8 +167,15 @@ def _ssd_forward(
         )
         y_t = local_y + carry_y + d_skip_term[None, None, :, None] * x_t
 
+        # State handed to the next chunk: `decay[-1]` is already the
+        # per-source-step decay out to the end of this chunk, so the new
+        # state is one more weighted contraction against B -- no need to
+        # separately materialize a full per-t state_prefix tensor.
+        decay_to_end = decay[-1]  # (s, b, h)
+        weighted_x = (decay_to_end * dt_t)[..., None] * x_t  # (s, b, h, p)
+        state_prefix_last = jnp.einsum("sbhp,sbn->bhpn", weighted_x, b_t)
         final_alpha = alpha_prefix[-1][..., None, None]
-        final_state = state_prefix[-1] + final_alpha * carry_state
+        final_state = state_prefix_last + final_alpha * carry_state
         return final_state, y_t
 
     final_state, y_chunks = jax.lax.scan(
