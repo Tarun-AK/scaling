@@ -17,6 +17,7 @@ from scipy.optimize import curve_fit
 
 import wandb
 from analysis.plot_group_labels import distinct_group_labels
+from analysis.ngram_split_utils import ngram_prefixes_for_split
 
 plt.style.use("~/plotStyle.mplstyle")
 
@@ -93,16 +94,13 @@ def _extract_ngram_index(metric_key: str) -> int | None:
     return None
 
 
-def _combined_ngram_keys(keys: list[str]) -> list[str]:
-    return [
-        key
-        for key in keys
-        if key.startswith("combined/ngram_") or key.startswith("combined/n_gram_")
-    ]
-
-
-def extract_l_ngrams(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
+def extract_l_ngrams(
+    runs: list[wandb.apis.public.Run],
+    *,
+    split: str = "combined",
+) -> pd.DataFrame:
     rows = []
+    prefixes = ngram_prefixes_for_split(split)
     for run in runs:
         hidden_dim = run.config.get("hidden_dim")
         if hidden_dim is None:
@@ -110,9 +108,11 @@ def extract_l_ngrams(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
         hidden_dim = int(hidden_dim)
 
         summary = run.summary or {}
-        combined_keys = _combined_ngram_keys(list(summary.keys()))
-        if combined_keys:
-            for key in combined_keys:
+        matched_keys = [
+            key for key in summary.keys() if any(key.startswith(p) for p in prefixes)
+        ]
+        if matched_keys:
+            for key in matched_keys:
                 n = _extract_ngram_index(key)
                 value = summary.get(key)
                 if n is None or not pd.notna(value):
@@ -127,17 +127,19 @@ def extract_l_ngrams(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
             continue
 
         history_cols = list(run.history(samples=1).columns)
-        combined_keys = _combined_ngram_keys(history_cols)
-        if not combined_keys:
+        matched_keys = [
+            key for key in history_cols if any(key.startswith(p) for p in prefixes)
+        ]
+        if not matched_keys:
             continue
-        history = run.history(keys=combined_keys, samples=10000)
+        history = run.history(keys=matched_keys, samples=10000)
         if history.empty:
             continue
-        valid = history[combined_keys].dropna(how="all")
+        valid = history[matched_keys].dropna(how="all")
         if valid.empty:
             continue
         last_row = valid.iloc[-1]
-        for key in combined_keys:
+        for key in matched_keys:
             n = _extract_ngram_index(key)
             value = last_row.get(key)
             if n is None or not pd.notna(value):
@@ -230,6 +232,7 @@ def plot_l_infinity(
     out_path: str,
     title: str | None,
     external_h_inf: float | None = None,
+    raw: bool = False,
 ) -> None:
     non_empty = {k: v for k, v in l_inf_by_group.items() if not v.empty}
     if not non_empty:
@@ -248,6 +251,19 @@ def plot_l_infinity(
         color: str | None = None,
         fixed_asymptote: float | None = None,
     ) -> float | None:
+        if raw:
+            label = f"{label_base}{' [' + series_label + ']' if show_group_name else ''}"
+            kwargs = {
+                "marker": marker,
+                "markeredgecolor": "black",
+                "alpha": 0.8,
+                "label": label,
+            }
+            if color is not None:
+                kwargs["color"] = color
+            plt.plot(x, y, **kwargs)
+            return None
+
         fit_mask = (x > 0) & (y > 0)
         nu = None
         power_fit = None
@@ -374,8 +390,20 @@ def plot_l_infinity(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--group", type=str, nargs="+", default=None)
+    parser.add_argument(
+        "--split",
+        type=str,
+        choices=["combined", "validation", "train", "test", "all"],
+        default="combined",
+        help="Which n-gram split to plot; validation uses val/ngram_*",
+    )
     parser.add_argument("--output", type=str, default="results/L_infinity.png")
     parser.add_argument("--max-hidden-dim", type=int, default=None)
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Plot raw points only, without fitting power laws",
+    )
     parser.add_argument(
         "--include-external",
         type=str,
@@ -397,15 +425,28 @@ def main() -> None:
     l_inf_by_group: dict[str, pd.DataFrame] = {}
     for group_name in groups:
         runs = fetch_runs("tarunadvaith-/scaling", group=group_name)
-        l_n_df = extract_l_ngrams(runs)
+        l_n_df = extract_l_ngrams(runs, split=args.split)
         if args.max_hidden_dim is not None:
             l_n_df = l_n_df[l_n_df["hidden_dim"] <= args.max_hidden_dim]
         key = group_name if group_name is not None else "all"
-        l_inf_by_group[key] = fit_l_infinity(l_n_df)
+        if args.raw:
+            l_inf_by_group[key] = (
+                l_n_df.sort_values(["hidden_dim", "n"])
+                .groupby("hidden_dim", as_index=False)
+                .tail(1)[["hidden_dim", "loss"]]
+                .rename(columns={"loss": "l_inf"})
+                .sort_values("hidden_dim")
+            )
+        else:
+            l_inf_by_group[key] = fit_l_infinity(l_n_df)
         if key not in labels_by_group:
             labels_by_group[key] = key
 
     title = ", ".join(groups) if args.group else None
+    if args.split != "combined":
+        title = f"{title} [{args.split}]" if title else args.split
+        if args.output == "results/L_infinity.png":
+            args.output = args.output.replace(".png", f"_{args.split}.png")
     external_h_inf = None
     if args.include_external is not None:
         external_h_inf = _external_h_inf(
@@ -422,6 +463,7 @@ def main() -> None:
         args.output,
         title,
         external_h_inf=external_h_inf,
+        raw=args.raw,
     )
 
 

@@ -67,8 +67,11 @@ def _wandb_entity_project() -> tuple[str, str]:
 
 
 def _download_checkpoint_artifact(run_id: str, api: wandb.Api) -> str:
-    entity, project = _wandb_entity_project()
-    artifact_name = f"{entity}/{project}/checkpoint-{run_id}:latest"
+    from analysis.plot_bipartite_mi import resolve_final_checkpoint_artifact
+
+    # Resolves checkpoint-<run_id>:latest, falling back to the furthest-trained
+    # labelled checkpoint when that redundant artifact has been pruned.
+    artifact_name = resolve_final_checkpoint_artifact(run_id, api)
     artifact = api.artifact(artifact_name)
     tmpdir = tempfile.mkdtemp(prefix="ckpt_artifact_")
     artifact_dir = artifact.download(root=tmpdir)

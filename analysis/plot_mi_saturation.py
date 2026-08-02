@@ -20,13 +20,17 @@ from tqdm import tqdm
 
 import wandb
 from analysis.plot_bipartite_mi import (
+    CHECKPOINT_FINAL,
     DEFAULT_MAX_N,
     DEFAULT_MIN_N,
     DEFAULT_N_VALUES,
     _compute_lstm_direct_mi_for_run_from_data,
     _compute_lstm_sampled_mi_for_run,
     _filter_runs_by_hidden_dim,
+    _format_token_count,
+    _list_token_checkpoints,
     _resolve_group_runs,
+    token_checkpoint,
 )
 from analysis.plot_group_labels import distinct_group_labels
 
@@ -50,11 +54,26 @@ def _show_image(path: str) -> None:
     subprocess.run(["kitten", "icat", "--clear"], check=False)
 
 
-def _largest_available_mi_value(series: dict[int, float]) -> tuple[int, float]:
+def _tail_averaged_mi_value(
+    series: dict[int, float],
+    *,
+    seq_len: int,
+) -> tuple[int, float]:
     if not series:
         raise RuntimeError("No MI values available")
-    largest_n = max(series)
-    value = float(series[largest_n])
+    items = sorted(series.items())
+    if int(seq_len) > 2048:
+        tail_items = items[-min(3, len(items)) :]
+        tail_ns = [int(n) for n, _ in tail_items]
+        tail_values = [float(v) for _, v in tail_items]
+        if not all(np.isfinite(v) for v in tail_values):
+            raise RuntimeError(
+                f"Non-finite MI values in tail for seq_len={seq_len}: {tail_ns}"
+            )
+        return tail_ns[-1], float(np.mean(tail_values))
+
+    largest_n = int(items[-1][0])
+    value = float(items[-1][1])
     if not np.isfinite(value):
         raise RuntimeError(f"Non-finite MI value at N={largest_n}")
     return largest_n, value
@@ -68,10 +87,7 @@ def _plot_mi_saturation(
     if not rows:
         raise RuntimeError("No rows to plot")
 
-    hidden_dims = np.array([row["hidden_dim"] for row in rows], dtype=float)
-    mi_sat = np.array([row["mi_sat"] for row in rows], dtype=float)
-    groups = [str(row.get("group", "default")) for row in rows]
-    unique_groups = sorted(set(groups))
+    unique_groups = sorted({str(row.get("group", "default")) for row in rows})
     group_labels = (
         distinct_group_labels(unique_groups) if len(unique_groups) > 1 else {}
     )
@@ -81,67 +97,96 @@ def _plot_mi_saturation(
         g: marker_cycle[idx % len(marker_cycle)] for idx, g in enumerate(unique_groups)
     }
 
+    # One series per (group, token checkpoint). With token checkpoints the
+    # colour scale encodes training tokens, exactly as in plot_bipartite_mi, so
+    # a whole family of saturation curves fits on one axes.
+    token_values = sorted({r["tokens"] for r in rows if r.get("tokens") is not None})
+    cmap = plt.cm.viridis
+    if token_values:
+        norm = plt.Normalize(
+            vmin=(token_values[0] * 0.99 if len(token_values) == 1 else token_values[0]),
+            vmax=(token_values[-1] * 1.01 if len(token_values) == 1 else token_values[-1]),
+        )
+
+    def _series_color(tokens):
+        return cmap(norm(tokens)) if token_values and tokens is not None else None
+
+    series: dict[tuple[str, float | None], list[dict]] = {}
+    for row in rows:
+        key = (str(row.get("group", "default")), row.get("tokens"))
+        series.setdefault(key, []).append(row)
+
     fig, ax = plt.subplots(figsize=(8, 7.5))
-    for group_name in unique_groups:
-        mask_group = np.array([g == group_name for g in groups], dtype=bool)
+    for (group_name, tokens), series_rows in sorted(
+        series.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)
+    ):
+        series_rows = sorted(series_rows, key=lambda r: r["hidden_dim"])
+        hd = np.array([r["hidden_dim"] for r in series_rows], dtype=float)
+        sat = np.array([r["mi_sat"] for r in series_rows], dtype=float)
+        color = _series_color(tokens)
+        label_parts = []
+        if show_group_name:
+            label_parts.append(group_labels.get(group_name, group_name))
+        if tokens is not None:
+            label_parts.append(f"{_format_token_count(int(tokens))} tokens")
         ax.scatter(
-            hidden_dims[mask_group],
-            mi_sat[mask_group],
+            hd,
+            sat,
             edgecolor="black",
             marker=marker_by_group[group_name],
-            label=group_labels.get(group_name, group_name) if show_group_name else None,
+            color=color,
+            label=", ".join(label_parts) if label_parts else None,
         )
-    fit_mask = (
-        (hidden_dims > 0)
-        & (mi_sat > 0)
-        & np.isfinite(hidden_dims)
-        & np.isfinite(mi_sat)
-    )
-    for group_name in unique_groups:
-        mask_group = np.array([g == group_name for g in groups], dtype=bool)
-        fit_mask_group = fit_mask & mask_group
-        if int(np.sum(fit_mask_group)) < 2:
+
+        fit_mask = (hd > 0) & (sat > 0) & np.isfinite(hd) & np.isfinite(sat)
+        if int(np.sum(fit_mask)) < 2:
             continue
-        power, log_coef = np.polyfit(
-            np.log(hidden_dims[fit_mask_group]),
-            np.log(mi_sat[fit_mask_group]),
-            1,
-        )
+        power, log_coef = np.polyfit(np.log(hd[fit_mask]), np.log(sat[fit_mask]), 1)
         coef = float(np.exp(log_coef))
         fit_x = np.logspace(
-            np.log10(float(np.min(hidden_dims[fit_mask_group]))),
-            np.log10(float(np.max(hidden_dims[fit_mask_group]))),
+            np.log10(float(np.min(hd[fit_mask]))),
+            np.log10(float(np.max(hd[fit_mask]))),
             num=200,
         )
-        fit_y = coef * np.power(fit_x, power)
+        prefix = ", ".join(label_parts)
         ax.plot(
             fit_x,
-            fit_y,
+            coef * np.power(fit_x, power),
             linestyle=":",
             linewidth=1.5,
+            color=color,
             label=(
-                rf"{group_labels.get(group_name, group_name)}: "
-                rf"$\max(I(A:B))={coef:.3g}d_h^{{{power:.3f}}}$"
-                if show_group_name
-                else rf"$\max(I(A:B))={coef:.3g}d_h^{{{power:.3f}}}$"
+                (rf"{prefix}: " if prefix else "")
+                + rf"$\max(I(A:B))={coef:.3g}d_h^{{{power:.3f}}}$"
             ),
         )
-    ax.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.4, -0.14),
-    )
+        print(
+            f"fit group={group_name} "
+            f"tokens={int(tokens) if tokens is not None else 'final'}: "
+            f"max(I(A:B))={coef:.4g}*d_h^{power:.4f} "
+            f"({int(np.sum(fit_mask))} points)"
+        )
+
+    if token_values:
+        colorbar = fig.colorbar(
+            plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, pad=0.02
+        )
+        colorbar.set_label("training tokens")
+        colorbar.set_ticks(token_values)
+        colorbar.set_ticklabels([_format_token_count(int(t)) for t in token_values])
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
     ax.set_xlabel("$d_h$")
     ax.set_ylabel(r"$\mathrm{max}(I_{d_h}(A:B))$")
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-    ax.set_title(title)
 
     out_dir = os.path.dirname(out_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=200)
+    # bbox_inches="tight" rather than tight_layout: it crops to the rendered
+    # artists, so anything drawn outside the axes rectangle (the colorbar here)
+    # is included rather than clipped.
+    fig.savefig(out_path, dpi=200, bbox_inches="tight", pad_inches=0.02)
     print(f"Saved to {out_path}")
     _show_image(out_path)
 
@@ -184,6 +229,23 @@ def main() -> None:
             "E[log q(B|A)] equals -sum L_n computed from the scored data logps, "
             "and that the cached log q(B) scalars are consistent with per-position losses."
         ),
+    )
+    parser.add_argument(
+        "--all-token-checkpoints",
+        action="store_true",
+        help=(
+            "Plot one saturation curve per token milestone "
+            "(checkpoint-<run_id>-tokens-<n>), discovered from the runs' logged "
+            "artifacts, coloured by training tokens. For runs trained with "
+            "checkpoint_every_n_tokens > 0."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-tokens",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Explicit token milestones, instead of --all-token-checkpoints.",
     )
     parser.add_argument(
         "--hidden-dim",
@@ -260,13 +322,14 @@ def main() -> None:
                 "--sanity-check-direct-data requires --sample-source data"
             )
 
-    n_values = [n for n in DEFAULT_N_VALUES if n <= int(args.max_n)]
-    if not n_values:
-        raise RuntimeError("No valid N values to evaluate")
+    if args.all_token_checkpoints and args.checkpoint_tokens:
+        raise RuntimeError(
+            "--all-token-checkpoints and --checkpoint-tokens are mutually exclusive"
+        )
 
     api = wandb.Api()
     groups = list(dict.fromkeys(args.group))
-    rows: list[dict[str, float | str]] = []
+    runs_by_group: dict[str, list] = {}
     for group_name in groups:
         runs = _resolve_group_runs(api, group_name)
         runs = [
@@ -279,55 +342,112 @@ def main() -> None:
                 f"No finished runs found for group='{group_name}' "
                 f"with hidden_dim <= {args.max_hidden_dim}"
             )
-        runs = _filter_runs_by_hidden_dim(runs, args.hidden_dim, group_name)
+        runs_by_group[group_name] = _filter_runs_by_hidden_dim(
+            runs, args.hidden_dim, group_name
+        )
 
-        for run in tqdm(runs, desc=f"Runs[{group_name}]", unit="run"):
+    milestones_by_run: dict[str, set[int]] = {}
+    if args.all_token_checkpoints or args.checkpoint_tokens:
+        for group_runs in runs_by_group.values():
+            for run in group_runs:
+                milestones_by_run[run.id] = set(_list_token_checkpoints(run))
+    if args.checkpoint_tokens:
+        milestones = sorted(dict.fromkeys(int(n) for n in args.checkpoint_tokens))
+    elif args.all_token_checkpoints:
+        milestones = sorted(set().union(*milestones_by_run.values()))
+        if not milestones:
+            raise RuntimeError(
+                "--all-token-checkpoints found no checkpoint-<run_id>-tokens-<n> "
+                "artifacts. Only runs trained with checkpoint_every_n_tokens > 0 "
+                "have them."
+            )
+        print(
+            f"Found {len(milestones)} token milestones: "
+            + ", ".join(_format_token_count(n) for n in milestones)
+        )
+    else:
+        milestones = []
+    checkpoints = (
+        [(token_checkpoint(n), float(n)) for n in milestones]
+        if milestones
+        else [(CHECKPOINT_FINAL, None)]
+    )
+
+    rows: list[dict[str, float | str]] = []
+    for group_name in groups:
+        for run in tqdm(runs_by_group[group_name], desc=f"Runs[{group_name}]", unit="run"):
             hidden_dim = int((run.config or {})["hidden_dim"])
-            if args.sample_source == "data":
-                mi_series = _compute_lstm_direct_mi_for_run_from_data(
-                    run,
-                    api,
-                    hidden_dim,
-                    n_values,
-                    num_samples=args.num_samples,
-                    batch_size=args.batch_size,
-                    cache_dir=args.cache_dir,
-                    force_resample=args.force_resample,
-                    data_split=args.data_split,
-                    data_seed=args.data_seed,
-                    sanity_check=bool(args.sanity_check_direct_data),
-                )
-            else:
-                mi_series = _compute_lstm_sampled_mi_for_run(
-                    run,
-                    api,
-                    hidden_dim,
-                    n_values,
-                    num_samples=args.num_samples,
-                    batch_size=args.batch_size,
-                    cache_dir=args.cache_dir,
-                    force_resample=args.force_resample,
-                )
-            if not mi_series:
+            run_seq_len = int((run.config or {}).get("seq_len", int(args.max_n)))
+            n_values = [n for n in DEFAULT_N_VALUES if n <= run_seq_len]
+            if not n_values:
                 print(
                     "Skipping hidden_dim="
-                    f"{hidden_dim}: no cached MI values available"
+                    f"{hidden_dim}: no valid N values for seq_len={run_seq_len}"
                 )
                 continue
-            saturation_n, mi_sat = _largest_available_mi_value(mi_series)
-            rows.append(
-                {
-                    "group": group_name,
-                    "hidden_dim": float(hidden_dim),
-                    "mi_sat": mi_sat,
-                    "saturation_n": float(saturation_n),
-                }
-            )
+            for checkpoint, tokens in checkpoints:
+                if (
+                    tokens is not None
+                    and run.id in milestones_by_run
+                    and int(tokens) not in milestones_by_run[run.id]
+                ):
+                    print(
+                        f"Skipping hidden_dim={hidden_dim}: run {run.id} has no "
+                        f"checkpoint at {_format_token_count(int(tokens))} tokens"
+                    )
+                    continue
+                if args.sample_source == "data":
+                    mi_series = _compute_lstm_direct_mi_for_run_from_data(
+                        run,
+                        api,
+                        hidden_dim,
+                        n_values,
+                        batch_size=args.batch_size,
+                        cache_dir=args.cache_dir,
+                        force_resample=args.force_resample,
+                        data_split=args.data_split,
+                        sanity_check=bool(args.sanity_check_direct_data),
+                        checkpoint=checkpoint,
+                    )
+                else:
+                    mi_series = _compute_lstm_sampled_mi_for_run(
+                        run,
+                        api,
+                        hidden_dim,
+                        n_values,
+                        num_samples=args.num_samples,
+                        batch_size=args.batch_size,
+                        cache_dir=args.cache_dir,
+                        force_resample=args.force_resample,
+                        checkpoint=checkpoint,
+                    )
+                if not mi_series:
+                    print(
+                        "Skipping hidden_dim="
+                        f"{hidden_dim} checkpoint={checkpoint}: "
+                        "no cached MI values available"
+                    )
+                    continue
+                saturation_n, mi_sat = _tail_averaged_mi_value(
+                    mi_series,
+                    seq_len=run_seq_len,
+                )
+                rows.append(
+                    {
+                        "group": group_name,
+                        "hidden_dim": float(hidden_dim),
+                        "mi_sat": mi_sat,
+                        "saturation_n": float(saturation_n),
+                        "tokens": tokens,
+                    }
+                )
 
-    rows.sort(key=lambda row: row["hidden_dim"])
+    rows.sort(key=lambda row: (row.get("tokens") or 0, row["hidden_dim"]))
     for row in rows:
+        tokens = row.get("tokens")
+        label = f"{_format_token_count(int(tokens))} tokens, " if tokens else ""
         print(
-            f"hidden_dim={row['hidden_dim']:.0f}, "
+            f"{label}hidden_dim={row['hidden_dim']:.0f}, "
             f"{estimator}_I(A:B)(N={int(row['saturation_n'])})={row['mi_sat']:.6g}"
         )
 

@@ -410,7 +410,7 @@ def _load_dataset(
     normalized_config = _normalize_dataset_config(dataset_config)
     if dataset_name in {"deepmind/pg19", "pg19"}:
         return load_pg19_dataset(cache_dir=cache_dir)
-    if dataset_name in {"openwebtext", "owt"}:
+    if dataset_name in {"openwebtext", "owt", "openwebtext_full"}:
         return load_openwebtext_dataset(data_dir=dataset_path or "openwebtext")
     if normalized_config:
         return load_dataset(dataset_name, normalized_config)

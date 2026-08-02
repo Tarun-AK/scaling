@@ -1,0 +1,51 @@
+# Full OpenWebText (~8.01M documents, ~10.3B tokens at vocab 10000).
+#
+# Build the corpus and its tokenized cache first:
+#   python data/preprocess_openwebtext_full.py
+#   python data/preprocess_wikitext.py --dataset-name openwebtext_full ...
+#
+# Distinct dataset_name and cache_dir keep this corpus from colliding with the
+# ~3.1B-token CS336 subset in data/openwebtext_cache: the cache filename is
+# keyed on dataset_name/seq_len/vocab/tokenizer only, NOT on corpus content, so
+# reusing "openwebtext" here would silently load the smaller cached corpus.
+defaults:
+  - base
+  - _self_
+
+dataset_name: "openwebtext_full"
+dataset_config: null
+dataset_path: "openwebtext_full"
+cache_dir: "data/openwebtext_full_cache"
+
+# Reuses the existing vocab-10000 BPE. It was trained on a subset of OWT, which
+# is fine for tokenizing the rest. Keep it fixed across the sweep: vocab size
+# sets the units MI is measured in, so changing it makes runs incomparable.
+tokenizer_path: "openwebtext/tokenizer/tokenizer.json"
+vocab_size: 10000
+bos_token_id: 256
+
+seq_len: 8192
+batch_size: 64
+# Keep at 1. The LSTM recurrence is sequential over seq_len, so accumulation
+# only shrinks the per-step matmuls -- at grad_accum_steps=8 the recurrence runs
+# on 8 sequences at a time and the GPU sits idle. Measured 2.9x slower at
+# hd=128/seq=8192 than grad_accum_steps=1, with no memory benefit that matters
+# here. (Mamba's seq8192 runs use 8; that does not transfer to the LSTM.)
+grad_accum_steps: 1
+num_epochs: 1
+require_cached_data: true
+
+# ~1.55B tokens, giving 6 milestone checkpoints over the ~10.3B-token corpus
+# plus one at the end. Token milestones (rather than epoch fractions) are what
+# make checkpoints comparable across runs with different batch size or seq_len.
+checkpoint_every_n_tokens: 1549441024
+
+# Disabled: a plateau part-way through a ~12h run would truncate it and silently
+# cost every later checkpoint.
+eval_every_n_steps: 2000
+early_stop_patience: 0
+
+entropy_num_samples: 0
+entropy_sample_batch_size: 0
+
+wandb_group: "seq_len_8192_openwebtext_full"

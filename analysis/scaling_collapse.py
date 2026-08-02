@@ -164,9 +164,6 @@ def plot_scaling_collapse(
     ax.set_yscale("log")
     ax.set_xlabel(rf"$d_h / n^{{(2 - x_1)/\alpha}}$")
     ax.set_ylabel(rf"$(L_n - L_\infty)/n^{{1 - x_1}}$")
-    ax.set_title(
-        rf"Scaling collapse ({group}), $x_1={x_1:.3g}$, $\alpha={alpha:.3g}$"
-    )
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
     sm.set_array([])
