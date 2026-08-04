@@ -299,7 +299,6 @@ def _plot_curves(
     ax.set_yscale("log")
     ax.set_xlabel("n (tokens in between)")
     ax.set_ylabel(r"$\hat{I}(X_0; X_{n+1})$")
-    ax.set_title(title)
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
     ax.legend(
         loc="upper center",

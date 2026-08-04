@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict
-
 import jax
 import jax.numpy as jnp
 
@@ -18,7 +16,7 @@ def compute_all_ngram_losses(
     params,
     tokens: jax.Array,
     bos_token_id: int,
-) -> Dict[str, jax.Array]:
+) -> jax.Array:
     """Compute loss at every position n from 1 to seq_len.
 
     Uses a single forward pass. The n-gram loss at position n is defined as
@@ -30,7 +28,10 @@ def compute_all_ngram_losses(
         tokens: Integer token ids, shape (batch, seq_len).
         bos_token_id: Token id to use as fixed BOS.
     Returns:
-        Dict mapping "ngram_1".."ngram_{seq_len}" to scalar losses.
+        Array of shape (seq_len,) -- index n-1 is the ngram_n loss. Returned
+        as a single array (not a dict of seq_len python-level scalars) so
+        callers can pull results off device with one jax.device_get instead
+        of one blocking device_get per sequence position.
     """
     inputs = _prepend_bos(tokens, bos_token_id)  # (batch, seq_len)
     targets = tokens  # (batch, seq_len)
@@ -41,8 +42,4 @@ def compute_all_ngram_losses(
         -1
     )
 
-    per_position_loss = -jnp.mean(token_logp, axis=0)
-
-    return {
-        f"ngram_{n}": per_position_loss[n - 1] for n in range(1, tokens.shape[1] + 1)
-    }
+    return -jnp.mean(token_logp, axis=0)

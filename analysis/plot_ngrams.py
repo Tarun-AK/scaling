@@ -24,6 +24,7 @@ from scipy.optimize import curve_fit
 
 import wandb
 from analysis.plot_group_labels import distinct_group_labels
+from analysis.ngram_split_utils import ngram_prefixes_for_split
 
 
 def power_law(n, L_inf, c, power):
@@ -47,6 +48,33 @@ def _format_power(power: float, power_err: float | None) -> str:
     if power_err is None or not np.isfinite(power_err):
         return f"{power:.3f}"
     return f"{power:.3f}±{power_err:.3f}"
+
+
+DATASET_BY_PREFIX = {
+    "combined/ngram_": "combined",
+    "combined/n_gram_": "combined",
+    "train/ngram_": "train",
+    "train/n_gram_": "train",
+    "test/ngram_": "test",
+    "test/n_gram_": "test",
+    "val/ngram_": "validation",
+    "validation/ngram_": "validation",
+    "val/n_gram_": "validation",
+    "validation/n_gram_": "validation",
+    "train_ngram/ngram_": "train",
+    "train_ngram/n_gram_": "train",
+}
+
+# Marker shape per logical split, used so overlaid splits (e.g.
+# --split train val) stay visually distinct regardless of hidden_dim color.
+MARKER_BY_DATASET = {
+    "train": "s",
+    "val": "o",
+    "validation": "o",
+    "test": "^",
+    "all": "D",
+    "combined": "o",
+}
 
 
 plt.style.use("~/plotStyle.mplstyle")
@@ -115,32 +143,111 @@ def extract_metrics(
             continue
         group_name = getattr(r, "group", None) or "ungrouped"
         summary = r.summary or {}
+        run_rows: List[Dict[str, Any]] = []
 
-        if split == "all":
-            prefixes = ["combined/ngram_", "train_ngram/ngram_"]
-        elif split == "train":
-            prefixes = ["train_ngram/ngram_"]
-        else:
-            prefixes = ["combined/ngram_"]
+        prefixes = ngram_prefixes_for_split(split)
+        for k, v in summary.items():
+            prefix = next((p for p in prefixes if k.startswith(p)), None)
+            if prefix is None:
+                continue
+            n = int(k.split("_")[-1])
+            run_rows.append(
+                {
+                    "hidden_dim": int(hidden_dim),
+                    "n": n,
+                    "loss": v,
+                    "dataset": DATASET_BY_PREFIX[prefix],
+                    "group": str(group_name),
+                }
+            )
 
-        for prefix in prefixes:
-            for k, v in summary.items():
-                if k.startswith(prefix):
-                    n = int(k.split("_")[-1])
-                    dataset = "train" if "train" in prefix else "combined"
-                    rows.append(
-                        {
-                            "hidden_dim": int(hidden_dim),
-                            "n": n,
-                            "loss": v,
-                            "dataset": dataset,
-                            "group": str(group_name),
-                        }
-                    )
+        if run_rows:
+            rows.extend(run_rows)
+            continue
+
+        history_cols = list(r.history(samples=1).columns)
+        matched_history_keys = [
+            key for key in history_cols if any(key.startswith(p) for p in prefixes)
+        ]
+        if not matched_history_keys:
+            continue
+        history = r.history(keys=matched_history_keys, samples=10000)
+        if history.empty:
+            continue
+        valid = history[matched_history_keys].dropna(how="all")
+        if valid.empty:
+            continue
+        last_row = valid.iloc[-1]
+        for key in matched_history_keys:
+            n = _extract_ngram_index(key)
+            value = last_row.get(key)
+            if n is None or not pd.notna(value):
+                continue
+            prefix = next((p for p in prefixes if key.startswith(p)), None)
+            if prefix is None:
+                continue
+            run_rows.append(
+                {
+                    "hidden_dim": int(hidden_dim),
+                    "n": n,
+                    "loss": float(value),
+                    "dataset": DATASET_BY_PREFIX[prefix],
+                    "group": str(group_name),
+                }
+            )
+
+        rows.extend(run_rows)
 
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values(["hidden_dim", "n", "dataset"])
+
+
+def extract_split_metrics(
+    runs: List[wandb.apis.public.Run], splits: List[str]
+) -> pd.DataFrame:
+    """Build a DataFrame covering one or more requested logical splits.
+
+    "train", "val", and "test" each pull that split's own logged n-gram
+    metrics via extract_metrics. "all" is not a logged metric on its own --
+    it's computed here as the per-position mean of train/val/test for each
+    (hidden_dim, n, group), so it degrades gracefully to whichever of the
+    three splits actually have data for a given run.
+    """
+    fetched: Dict[str, pd.DataFrame] = {}
+
+    def _get(split_name: str) -> pd.DataFrame:
+        if split_name not in fetched:
+            fetched[split_name] = extract_metrics(runs, split=split_name)
+        return fetched[split_name]
+
+    frames: List[pd.DataFrame] = []
+    for split_name in splits:
+        if split_name == "all":
+            continue
+        part = _get(split_name)
+        if part.empty:
+            continue
+        part = part.copy()
+        part["dataset"] = split_name
+        frames.append(part)
+
+    if "all" in splits:
+        parts = [_get(s) for s in ("train", "val", "test")]
+        parts = [p for p in parts if not p.empty]
+        if parts:
+            merged = pd.concat(parts, ignore_index=True)
+            averaged = merged.groupby(
+                ["hidden_dim", "n", "group"], as_index=False
+            )["loss"].mean()
+            averaged["dataset"] = "all"
+            frames.append(averaged)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).sort_values(
+        ["hidden_dim", "n", "dataset"]
+    )
 
 
 def plot_ngrams(
@@ -427,7 +534,6 @@ def plot_ngrams(
             ax.set_ylabel(ylabel)
             ax.set_xscale("log")
             ax.set_yscale("log")
-            ax.set_title(f"N-gram loss vs position (d_h = {hidden_dim})")
             if xlim is not None:
                 ax.set_xlim(xlim)
             if ylim is not None:
@@ -465,9 +571,6 @@ def plot_ngrams(
             )
 
             for di, dataset in enumerate(datasets):
-                if dataset == "train" and not compare_train:
-                    continue
-
                 group = (
                     hd_group[hd_group["dataset"] == dataset]
                     if "dataset" in hd_group.columns
@@ -537,7 +640,8 @@ def plot_ngrams(
                                 f"Diff fit failed for hidden_dim={hidden_dim}, {dataset}: {e}."
                             )
 
-                    marker = "o" if dataset == "combined" else "s"
+                    fit_label = f"{fit_label} ({dataset})"
+                    marker = MARKER_BY_DATASET.get(dataset, "s")
                     color = cmap(norm(hidden_dim))
                     ax.scatter(
                         ns_plot,
@@ -649,7 +753,8 @@ def plot_ngrams(
                     else:
                         y_values = losses - L_inf
 
-                marker = "o" if dataset == "combined" else "s"
+                fit_label = f"{fit_label} ({dataset})"
+                marker = MARKER_BY_DATASET.get(dataset, "s")
                 color = cmap(norm(hidden_dim))
                 ax.scatter(
                     ns,
@@ -852,7 +957,6 @@ def plot_ngrams(
         ax.set_ylabel(ylabel)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_title("N-gram loss vs position")
         if xlim is not None:
             ax.set_xlim(xlim)
         if ylim is not None:
@@ -940,6 +1044,19 @@ def main() -> None:
         help="Plot both combined (val+test) and training n-grams for comparison",
     )
     parser.add_argument(
+        "--split",
+        type=str,
+        nargs="+",
+        choices=["train", "val", "validation", "test", "all"],
+        default=["all"],
+        help=(
+            "Which split(s) to plot. 'all' averages train+val+test at each "
+            "position n (falling back gracefully to whichever splits have "
+            "data). Pass any combination, e.g. --split train val, to "
+            "overlay those splits on the same axes."
+        ),
+    )
+    parser.add_argument(
         "--raw",
         action="store_true",
         help="Plot raw L_n without fitting or subtracting L_inf",
@@ -990,13 +1107,17 @@ def main() -> None:
         groups = []
         runs = fetch_runs("scaling", group=None)
 
-    # Determine which splits to fetch based on --compare-train flag
     if args.compare_train:
-        split = "all"
+        # Legacy comparison mode: unchanged, pools every logged prefix via
+        # the original extract_metrics(split="all") behavior.
+        split_label = "all"
+        df = extract_metrics(runs, split="all")
     else:
-        split = "combined"
-
-    df = extract_metrics(runs, split=split)
+        requested_splits = list(
+            dict.fromkeys("val" if s == "validation" else s for s in args.split)
+        )
+        split_label = "_".join(requested_splits)
+        df = extract_split_metrics(runs, requested_splits)
 
     if args.hidden_dim is not None and not df.empty:
         hidden_dims = set(args.hidden_dim)
@@ -1007,16 +1128,14 @@ def main() -> None:
                 f"{sorted(hidden_dims)}"
             )
 
-    # Determine dataset column presence for filtering
-    has_dataset_col = "dataset" in df.columns if not df.empty else False
-
-    # If not comparing train, filter to only combined
-    if not args.compare_train and has_dataset_col:
-        df = df[df["dataset"] == "combined"]
-
     output_path = "results/ngram_curves.png"
     if args.compare_train:
         output_path = "results/ngram_curves_compare.png"
+    else:
+        output_path = output_path.replace(
+            ".png",
+            f"_{split_label}.png",
+        )
     if groups:
         output_path = output_path.replace(
             ".png",

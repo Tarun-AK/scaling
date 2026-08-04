@@ -239,7 +239,6 @@ def plot_conditional_entropies(
             ax.set_ylabel(ylabel)
             ax.set_xscale("log")
             ax.set_yscale("log")
-            ax.set_title(f"Conditional entropy vs position (d_h = {hidden_dim})")
             if xlim is not None:
                 ax.set_xlim(xlim)
             if ylim is not None:
@@ -376,7 +375,6 @@ def plot_conditional_entropies(
         ax.set_ylabel(ylabel)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_title("Conditional entropy vs position")
         if xlim is not None:
             ax.set_xlim(xlim)
         if ylim is not None:

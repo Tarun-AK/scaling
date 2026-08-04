@@ -473,7 +473,6 @@ def _plot_curves(
     ax.set_yscale("log")
     ax.set_xlabel("n (tokens in between)")
     ax.set_ylabel(r"$\sigma_{\max}(C_n)$")
-    ax.set_title(title)
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
     if len(hidden_dims) > 1:
         sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)

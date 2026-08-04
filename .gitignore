@@ -10,3 +10,9 @@ __pycache__/
 /data/cache/
 /data/openwebtext_cache/
 /data/pg19_cache/
+/openwebtext/
+/openwebtext_full/
+/openwebtext_5m/
+/logs/
+/data/openwebtext_full_cache/
+/data/openwebtext_cache_seq16384/

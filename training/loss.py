@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import optax
 
 
 def mean_neg_log_prob(logits: jax.Array, observed_tokens: jax.Array) -> jax.Array:
@@ -30,8 +31,13 @@ def mean_neg_log_prob(logits: jax.Array, observed_tokens: jax.Array) -> jax.Arra
 
 
 def cross_entropy_loss(logits: jax.Array, observed_tokens: jax.Array) -> jax.Array:
-    """Alias for mean negative log-probability.
+    """Mean negative log-probability, without materializing log-softmax.
 
-    Kept for backwards readability in the trainer.
+    Mathematically identical to mean_neg_log_prob, but the fused form avoids
+    building a second (batch, seq_len, vocab_size) array for the log
+    probabilities and keeping it live for the backward pass. At seq_len 8192 and
+    vocab 10000 that intermediate is gigabytes, so it is worth not having.
     """
-    return mean_neg_log_prob(logits, observed_tokens)
+    return jnp.mean(
+        optax.softmax_cross_entropy_with_integer_labels(logits, observed_tokens)
+    )

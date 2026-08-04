@@ -48,6 +48,7 @@ def load_openwebtext_dataset(
     root = Path(data_dir)
     train_path = root / "owt_train.txt"
     valid_path = root / "owt_valid.txt"
+    test_path = root / "owt_test.txt"
 
     missing = [
         str(path)
@@ -57,8 +58,15 @@ def load_openwebtext_dataset(
     if missing:
         raise FileNotFoundError("Missing OpenWebText files: " + ", ".join(missing))
 
+    # The original CS336 distribution ships only train/valid, so test aliases
+    # valid there (validation and test are then literally the same tokens).
+    # Corpora built by preprocess_openwebtext_full.py also write owt_test.txt,
+    # which gives a genuinely disjoint test split; prefer it when present.
+    if not test_path.exists():
+        test_path = valid_path
+
     return {
         "train": OpenWebTextSplit(text=OpenWebTextDocuments(train_path)),
         "validation": OpenWebTextSplit(text=OpenWebTextDocuments(valid_path)),
-        "test": OpenWebTextSplit(text=OpenWebTextDocuments(valid_path)),
+        "test": OpenWebTextSplit(text=OpenWebTextDocuments(test_path)),
     }

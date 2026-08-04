@@ -119,24 +119,57 @@ def _normalize_params_for_step(params: dict, num_layers: int) -> dict:
     return normalized
 
 
-@functools.partial(jax.jit, static_argnames=("bos_token_id",))
-def _microbatch_grad_step(
+@functools.partial(
+    jax.jit,
+    static_argnames=("bos_token_id", "grad_accum_steps"),
+    donate_argnums=(0,),
+)
+def _train_step_jit(
     state: TrainState,
     batch: jax.Array,
-    rng: jax.Array,
     bos_token_id: int,
-) -> Tuple[Dict[str, jax.Array], jax.Array, jax.Array]:
-    """Compute gradients for a single microbatch."""
-    inputs = _prepend_bos(batch, bos_token_id)
-    observed_next_tokens = batch
+    grad_accum_steps: int,
+) -> Tuple[TrainState, jax.Array]:
+    """One optimizer step, entirely inside a single jit.
 
-    def loss_fn(params):
-        logits = state.apply_fn({"params": params}, inputs)
-        loss = cross_entropy_loss(logits, observed_next_tokens)
-        return loss, logits
+    The accumulation loop, the gradient averaging and the optimizer update are
+    all traced together: done outside jit they dispatch a separate kernel per
+    parameter per microbatch, which dominates the step for small models. The
+    state is donated so params and Adam moments are updated in place.
+    """
 
-    (loss, _), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    return grads, loss, rng
+    def microbatch_grads(params, micro_batch):
+        def loss_fn(p):
+            logits = state.apply_fn(
+                {"params": p}, _prepend_bos(micro_batch, bos_token_id)
+            )
+            return cross_entropy_loss(logits, micro_batch)
+
+        return jax.value_and_grad(loss_fn)(params)
+
+    if grad_accum_steps == 1:
+        loss, grads = microbatch_grads(state.params, batch)
+    else:
+        micro_batches = batch.reshape(
+            grad_accum_steps, batch.shape[0] // grad_accum_steps, batch.shape[1]
+        )
+
+        def accumulate(carry, micro_batch):
+            grads_sum, loss_sum = carry
+            loss, grads = microbatch_grads(state.params, micro_batch)
+            return (
+                jax.tree_util.tree_map(jnp.add, grads_sum, grads),
+                loss_sum + loss,
+            ), None
+
+        zero_grads = jax.tree_util.tree_map(jnp.zeros_like, state.params)
+        (grads_sum, loss_sum), _ = jax.lax.scan(
+            accumulate, (zero_grads, jnp.zeros((), jnp.float32)), micro_batches
+        )
+        grads = jax.tree_util.tree_map(lambda g: g / grad_accum_steps, grads_sum)
+        loss = loss_sum / grad_accum_steps
+
+    return state.apply_gradients(grads=grads), loss
 
 
 def train_step(
@@ -146,42 +179,24 @@ def train_step(
     bos_token_id: int,
     grad_accum_steps: int,
 ) -> Tuple[TrainState, Dict[str, jax.Array], jax.Array]:
-    """Perform one optimizer step using gradient accumulation."""
+    """Perform one optimizer step, optionally with gradient accumulation.
+
+    NOTE: `state` is donated, so the caller must rebind it from the return value
+    and must not touch the state it passed in.
+    """
+    grad_accum_steps = int(grad_accum_steps)
     if grad_accum_steps < 1:
         raise RuntimeError("grad_accum_steps must be >= 1")
 
-    if grad_accum_steps == 1:
-        grads, loss, rng = _microbatch_grad_step(state, batch, rng, bos_token_id)
-        new_state = state.apply_gradients(grads=grads)
-        return new_state, {"loss": loss}, rng
-
     batch_size = int(batch.shape[0])
-    if batch_size % int(grad_accum_steps) != 0:
+    if batch_size % grad_accum_steps != 0:
         raise RuntimeError(
-            f"batch_size={batch_size} must be divisible by grad_accum_steps={grad_accum_steps}"
+            f"batch_size={batch_size} must be divisible by "
+            f"grad_accum_steps={grad_accum_steps}"
         )
 
-    micro_batch_size = batch_size // int(grad_accum_steps)
-    batch_reshaped = batch.reshape(int(grad_accum_steps), micro_batch_size, batch.shape[1])
-
-    grads_accum = None
-    losses: list[jax.Array] = []
-    for micro_batch in batch_reshaped:
-        grads, loss, rng = _microbatch_grad_step(state, micro_batch, rng, bos_token_id)
-        losses.append(loss)
-        if grads_accum is None:
-            grads_accum = grads
-        else:
-            grads_accum = jax.tree_util.tree_map(lambda a, b: a + b, grads_accum, grads)
-
-    assert grads_accum is not None
-    grads_accum = jax.tree_util.tree_map(
-        lambda g: g / jnp.asarray(float(grad_accum_steps), dtype=g.dtype),
-        grads_accum,
-    )
-    new_state = state.apply_gradients(grads=grads_accum)
-    mean_loss = jnp.mean(jnp.stack(losses))
-    return new_state, {"loss": mean_loss}, rng
+    new_state, loss = _train_step_jit(state, batch, bos_token_id, grad_accum_steps)
+    return new_state, {"loss": loss}, rng
 
 
 @functools.partial(jax.jit, static_argnames=("bos_token_id",))
@@ -189,7 +204,7 @@ def eval_step(
     state: TrainState,
     batch: jax.Array,
     bos_token_id: int,
-) -> Dict[str, jax.Array]:
+) -> jax.Array:
     """Compute all n-gram losses for a batch."""
     return compute_all_ngram_losses(state.apply_fn, state.params, batch, bos_token_id)
 
@@ -205,17 +220,23 @@ def eval_loss_step(
     return cross_entropy_loss(logits, batch)
 
 
-def _mean_metrics(metrics_list: Iterable[Dict[str, jax.Array]]) -> Dict[str, float]:
-    """Average a list of metric dicts into Python floats."""
-    totals: Dict[str, float] = {}
+def _mean_metrics(metrics_list: Iterable[jax.Array]) -> Dict[str, float]:
+    """Average a list of per-position-loss arrays into a dict of Python floats.
+
+    Each element of metrics_list is pulled off device with a single
+    jax.device_get call (not one per sequence position) -- avoids seq_len
+    blocking host<->device round trips per batch.
+    """
+    total = None
     count = 0
     for m in metrics_list:
         count += 1
-        for k, v in m.items():
-            totals[k] = totals.get(k, 0.0) + float(jax.device_get(v))
+        values = np.asarray(jax.device_get(m))
+        total = values if total is None else total + values
     if count == 0:
         return {}
-    return {k: v / count for k, v in totals.items()}
+    mean = total / count
+    return {f"ngram_{n}": float(v) for n, v in enumerate(mean, start=1)}
 
 
 def _ensure_dir(path: str) -> None:
@@ -357,8 +378,10 @@ def _compute_conditional_entropy_from_samples(
     }
 
 
-def _checkpoint_metadata(config: Any, epoch: int | None) -> dict[str, int | str]:
-    metadata: dict[str, int | str] = {
+def _checkpoint_metadata(
+    config: Any, epoch: float | int | None, tokens_seen: int | None = None
+) -> dict[str, int | float | str]:
+    metadata: dict[str, int | float | str] = {
         "model_type": str(getattr(config, "model_type", "lstm")),
         "hidden_dim": int(config.hidden_dim),
         "num_layers": int(config.num_layers),
@@ -366,7 +389,9 @@ def _checkpoint_metadata(config: Any, epoch: int | None) -> dict[str, int | str]
         "vocab_size": int(config.vocab_size),
     }
     if epoch is not None:
-        metadata["epoch"] = int(epoch)
+        metadata["epoch"] = epoch
+    if tokens_seen is not None:
+        metadata["tokens_seen"] = int(tokens_seen)
     return metadata
 
 
@@ -376,18 +401,22 @@ def _save_checkpoint(
     config: Any,
     checkpoint_root: str,
     wandb_run_id: str,
-    epoch: int | None,
+    epoch: float | int | None,
+    tokens_seen: int | None = None,
 ) -> str:
     _ensure_dir(checkpoint_root)
     checkpointer = ocp.PyTreeCheckpointer()
+    payload = {
+        "params": state.params,
+        "config": _config_to_dict(config),
+        "wandb_run_id": wandb_run_id,
+        "epoch": epoch,
+    }
+    if tokens_seen is not None:
+        payload["tokens_seen"] = int(tokens_seen)
     checkpointer.save(
         os.path.join(checkpoint_root, "ckpt"),
-        {
-            "params": state.params,
-            "config": _config_to_dict(config),
-            "wandb_run_id": wandb_run_id,
-            "epoch": epoch,
-        },
+        payload,
         force=True,
     )
     return checkpoint_root
@@ -399,11 +428,15 @@ def _log_checkpoint_artifact(
     checkpoint_root: str,
     artifact_name: str,
     wandb_run_id: str,
-    epoch: int | None,
+    epoch: float | int | None,
+    tokens_seen: int | None = None,
 ) -> None:
     import wandb
 
-    metadata = {"wandb_run_id": wandb_run_id, **_checkpoint_metadata(config, epoch)}
+    metadata = {
+        "wandb_run_id": wandb_run_id,
+        **_checkpoint_metadata(config, epoch, tokens_seen),
+    }
     artifact = wandb.Artifact(
         name=artifact_name,
         type="model",
@@ -411,6 +444,95 @@ def _log_checkpoint_artifact(
     )
     artifact.add_dir(checkpoint_root)
     wandb.log_artifact(artifact)
+
+
+def _save_epoch_checkpoint(
+    *,
+    state: TrainState,
+    config: Any,
+    epoch_label: str,
+    epoch_value: float | int,
+    wandb_run_id: str,
+) -> None:
+    """Save + log a checkpoint tagged with a (possibly fractional) epoch label.
+
+    epoch_label controls the on-disk directory / artifact name (e.g. "0000.5"
+    for the halfway point of the first epoch, "0001" for its end);
+    epoch_value is the numeric epoch stored in checkpoint/artifact metadata.
+    """
+    checkpoint_root = os.path.join(
+        str(config.checkpoint_dir),
+        "epochs",
+        f"hidden_dim={int(config.hidden_dim)}",
+        f"epoch={epoch_label}",
+    )
+    _save_checkpoint(
+        state=state,
+        config=config,
+        checkpoint_root=checkpoint_root,
+        wandb_run_id=wandb_run_id,
+        epoch=epoch_value,
+    )
+    _log_checkpoint_artifact(
+        config=config,
+        checkpoint_root=checkpoint_root,
+        artifact_name=f"checkpoint-{wandb_run_id}-epoch-{epoch_label}",
+        wandb_run_id=wandb_run_id,
+        epoch=epoch_value,
+    )
+
+
+# Width of the zero-padded token count in token-checkpoint artifact names.
+# Zero padding keeps them in training order under lexicographic sort, and 13
+# digits covers up to 10^13 tokens. analysis/plot_bipartite_mi.py mirrors this.
+TOKEN_LABEL_DIGITS = 13
+
+
+def token_checkpoint_label(tokens: int) -> str:
+    """Artifact-name label for a checkpoint taken at ``tokens`` tokens seen."""
+    return f"{int(tokens):0{TOKEN_LABEL_DIGITS}d}"
+
+
+def _save_token_checkpoint(
+    *,
+    state: TrainState,
+    config: Any,
+    nominal_tokens: int,
+    tokens_seen: int,
+    epoch_value: float,
+    wandb_run_id: str,
+) -> None:
+    """Save + log a checkpoint tagged by cumulative training tokens.
+
+    ``nominal_tokens`` is the milestone the checkpoint stands for (a multiple of
+    checkpoint_every_n_tokens) and names the artifact; ``tokens_seen`` is the
+    exact count, which overshoots the milestone by up to one batch and is kept
+    in metadata. Naming by the milestone is what makes the same checkpoint index
+    line up across runs with different batch sizes or sequence lengths.
+    """
+    label = token_checkpoint_label(nominal_tokens)
+    checkpoint_root = os.path.join(
+        str(config.checkpoint_dir),
+        "tokens",
+        f"hidden_dim={int(config.hidden_dim)}",
+        f"tokens={label}",
+    )
+    _save_checkpoint(
+        state=state,
+        config=config,
+        checkpoint_root=checkpoint_root,
+        wandb_run_id=wandb_run_id,
+        epoch=epoch_value,
+        tokens_seen=tokens_seen,
+    )
+    _log_checkpoint_artifact(
+        config=config,
+        checkpoint_root=checkpoint_root,
+        artifact_name=f"checkpoint-{wandb_run_id}-tokens-{label}",
+        wandb_run_id=wandb_run_id,
+        epoch=epoch_value,
+        tokens_seen=tokens_seen,
+    )
 
 
 def _post_training_evals_and_checkpoint(
@@ -569,7 +691,9 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
                 getattr(config, "mamba_state_size", getattr(config, "mamba_d_state", 16))
             ),
             head_dim=int(getattr(config, "mamba_head_dim", 16)),
-            chunk_size=int(getattr(config, "mamba_chunk_size", 256)),
+            # 256 was the old fallback and is ~1.6x slower than 16 at
+            # hd128/seq8192; see configs/base.yaml:mamba_chunk_size.
+            chunk_size=int(getattr(config, "mamba_chunk_size", 16)),
             expand=int(getattr(config, "mamba_expand", 2)),
             conv_kernel=int(getattr(config, "mamba_conv_kernel", 4)),
         )
@@ -691,6 +815,35 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
     early_stopped = False
     final_epoch = 0
 
+    # Checkpoint cadence. Two mutually exclusive modes:
+    #  - checkpoint_every_n_tokens > 0: checkpoint on cumulative-token
+    #    milestones (plus one at the very end). Token counts are comparable
+    #    across corpus sizes, which epoch fractions are not.
+    #  - otherwise: the original half-epoch + end-of-epoch cadence.
+    checkpoint_every_n_tokens = int(
+        getattr(config, "checkpoint_every_n_tokens", 0) or 0
+    )
+    if checkpoint_every_n_tokens < 0:
+        raise RuntimeError("checkpoint_every_n_tokens must be >= 0")
+    token_checkpoints = checkpoint_every_n_tokens > 0
+    tokens_per_batch = batch_size * seq_len
+    tokens_seen = 0
+    next_token_milestone = checkpoint_every_n_tokens if token_checkpoints else 0
+    last_token_checkpoint = 0
+
+    # Batch index (1-indexed, within the current epoch) at which to save the
+    # halfway-point checkpoint, in addition to the existing end-of-epoch one.
+    halfway_batch_count = 0 if token_checkpoints else num_train_batches // 2
+
+    if token_checkpoints:
+        total_tokens = num_train_batches * num_epochs * tokens_per_batch
+        print(
+            f"Token checkpointing every {checkpoint_every_n_tokens:,} tokens "
+            f"({tokens_per_batch:,} tokens/batch, {total_tokens:,} total => "
+            f"{total_tokens // checkpoint_every_n_tokens} milestone checkpoints "
+            "+ 1 final)"
+        )
+
     for epoch in range(num_epochs):
         final_epoch = epoch + 1
         train_batches = batch_iterator(
@@ -706,6 +859,7 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
             desc=f"epoch {epoch + 1}/{num_epochs}",
             leave=True,
         )
+        batches_seen_this_epoch = 0
         for batch in progress:
             state, metrics, rng = train_step(
                 state,
@@ -715,6 +869,33 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
                 grad_accum_steps,
             )
             global_step += 1
+            batches_seen_this_epoch += 1
+            tokens_seen += tokens_per_batch
+            if (
+                halfway_batch_count > 0
+                and batches_seen_this_epoch == halfway_batch_count
+            ):
+                _save_epoch_checkpoint(
+                    state=state,
+                    config=config,
+                    epoch_label=f"{epoch:04d}.5",
+                    epoch_value=epoch + 0.5,
+                    wandb_run_id=wandb.run.id,
+                )
+            if token_checkpoints and tokens_seen >= next_token_milestone:
+                _save_token_checkpoint(
+                    state=state,
+                    config=config,
+                    nominal_tokens=next_token_milestone,
+                    tokens_seen=tokens_seen,
+                    epoch_value=epoch + batches_seen_this_epoch / num_train_batches,
+                    wandb_run_id=wandb.run.id,
+                )
+                last_token_checkpoint = next_token_milestone
+                # A single batch can only cross one milestone in practice, but
+                # advance past every crossed one so the cadence cannot drift.
+                while next_token_milestone <= tokens_seen:
+                    next_token_milestone += checkpoint_every_n_tokens
             rate = progress.format_dict.get("rate", None)
             if rate is not None:
                 progress.set_postfix(
@@ -765,26 +946,28 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
         wandb.log({f"val/{k}": v for k, v in val_mean.items()}, step=global_step)
 
         epoch_idx = epoch + 1
-        epoch_checkpoint_root = os.path.join(
-            str(config.checkpoint_dir),
-            "epochs",
-            f"hidden_dim={int(config.hidden_dim)}",
-            f"epoch={epoch_idx:04d}",
-        )
-        _save_checkpoint(
-            state=state,
-            config=config,
-            checkpoint_root=epoch_checkpoint_root,
-            wandb_run_id=wandb.run.id,
-            epoch=epoch_idx,
-        )
-        _log_checkpoint_artifact(
-            config=config,
-            checkpoint_root=epoch_checkpoint_root,
-            artifact_name=f"checkpoint-{wandb.run.id}-epoch-{epoch_idx:04d}",
-            wandb_run_id=wandb.run.id,
-            epoch=epoch_idx,
-        )
+        if not token_checkpoints:
+            _save_epoch_checkpoint(
+                state=state,
+                config=config,
+                epoch_label=f"{epoch_idx:04d}",
+                epoch_value=epoch_idx,
+                wandb_run_id=wandb.run.id,
+            )
+
+    if token_checkpoints:
+        wandb.log({"train/tokens_seen": tokens_seen}, step=global_step)
+        # The corpus is not an exact multiple of the milestone interval, so the
+        # tail after the last milestone would otherwise never be checkpointed.
+        if tokens_seen > last_token_checkpoint:
+            _save_token_checkpoint(
+                state=state,
+                config=config,
+                nominal_tokens=tokens_seen,
+                tokens_seen=tokens_seen,
+                epoch_value=float(final_epoch),
+                wandb_run_id=wandb.run.id,
+            )
 
     try:
         return _post_training_evals_and_checkpoint(

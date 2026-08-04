@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 
+from analysis.ngram_split_utils import ngram_prefixes_for_split
 from analysis.plot_group_labels import distinct_group_labels
 
 import wandb
@@ -91,16 +92,13 @@ def _extract_ngram_index(metric_key: str) -> int | None:
     return None
 
 
-def _combined_ngram_keys(keys: list[str]) -> list[str]:
-    return [
-        key
-        for key in keys
-        if key.startswith("combined/ngram_") or key.startswith("combined/n_gram_")
-    ]
-
-
-def extract_l_ngrams(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
+def extract_l_ngrams(
+    runs: list[wandb.apis.public.Run],
+    *,
+    split: str = "combined",
+) -> pd.DataFrame:
     rows = []
+    prefixes = ngram_prefixes_for_split(split)
     for run in runs:
         hidden_dim = run.config.get("hidden_dim")
         if hidden_dim is None:
@@ -108,7 +106,9 @@ def extract_l_ngrams(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
         hidden_dim = int(hidden_dim)
 
         summary = run.summary or {}
-        combined_keys = _combined_ngram_keys(list(summary.keys()))
+        combined_keys = [
+            key for key in summary.keys() if any(key.startswith(p) for p in prefixes)
+        ]
         if combined_keys:
             for key in combined_keys:
                 n = _extract_ngram_index(key)
@@ -125,7 +125,9 @@ def extract_l_ngrams(runs: list[wandb.apis.public.Run]) -> pd.DataFrame:
             continue
 
         history_cols = list(run.history(samples=1).columns)
-        combined_keys = _combined_ngram_keys(history_cols)
+        combined_keys = [
+            key for key in history_cols if any(key.startswith(p) for p in prefixes)
+        ]
         if not combined_keys:
             continue
         history = run.history(keys=combined_keys, samples=10000)
@@ -209,6 +211,7 @@ def plot_l(
     title: str | None,
     external_h: float | None = None,
     labels_by_group: dict[str, str] | None = None,
+    raw: bool = False,
 ) -> None:
     non_empty = {k: v for k, v in l_by_group.items() if not v.empty}
     if not non_empty:
@@ -227,6 +230,20 @@ def plot_l(
         fixed_asymptote: float | None = None,
         include_group_name_in_legend: bool = False,
     ) -> float | None:
+        if raw:
+            legend_suffix = f" [{series_label}]" if include_group_name_in_legend else ""
+            label = f"{label_base}{legend_suffix}"
+            kwargs = {
+                "marker": marker,
+                "markeredgecolor": "black",
+                "alpha": 0.8,
+                "label": label,
+            }
+            if color is not None:
+                kwargs["color"] = color
+            plt.plot(x, y, **kwargs)
+            return None
+
         fit_mask = (x > 0) & (y > 0)
         nu = None
         power_fit = None
@@ -356,6 +373,13 @@ def plot_l(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--group", type=str, nargs="+", default=None)
+    parser.add_argument(
+        "--split",
+        type=str,
+        choices=["combined", "validation", "train", "test", "all"],
+        default="combined",
+        help="Which n-gram split to plot; validation uses val/ngram_*",
+    )
     parser.add_argument("--output", type=str, default="results/L.png")
     parser.add_argument("--max-hidden-dim", type=int, default=None)
     parser.add_argument(
@@ -365,13 +389,18 @@ def main() -> None:
         default=None,
         help="Use external ln source to define fixed H",
     )
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Plot raw points only, without fitting power laws",
+    )
     args = parser.parse_args()
 
     groups = args.group if args.group else [None]
     l_by_group: dict[str, pd.DataFrame] = {}
     for group_name in groups:
         runs = fetch_runs("tarunadvaith-/scaling", group=group_name)
-        l_n_df = extract_l_ngrams(runs)
+        l_n_df = extract_l_ngrams(runs, split=args.split)
         if args.max_hidden_dim is not None:
             l_n_df = l_n_df[l_n_df["hidden_dim"] <= args.max_hidden_dim]
         key = group_name if group_name is not None else "all"
@@ -379,10 +408,14 @@ def main() -> None:
         if l_by_group[key].empty:
             group_text = group_name if group_name is not None else "all runs"
             raise RuntimeError(
-                f"No combined n-gram losses found for group '{group_text}'."
+                f"No {args.split} n-gram losses found for group '{group_text}'."
             )
 
     title = ", ".join(groups) if args.group else None
+    if args.split != "combined":
+        title = f"{title} [{args.split}]" if title else args.split
+        if args.output == "results/L.png":
+            args.output = args.output.replace(".png", f"_{args.split}.png")
     labels_by_group = distinct_group_labels([g for g in groups if g is not None])
     external_h = None
     if args.include_external is not None:
@@ -397,6 +430,7 @@ def main() -> None:
         title,
         external_h=external_h,
         labels_by_group=labels_by_group,
+        raw=args.raw,
     )
 
 

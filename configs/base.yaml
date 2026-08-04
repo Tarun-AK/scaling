@@ -4,7 +4,12 @@ model_type: "lstm"
 mamba_d_state: 16
 mamba_state_size: 16
 mamba_head_dim: 16
-mamba_chunk_size: 128
+# Pure blocking factor for the chunked SSD scan -- same function at any value,
+# only the fp32 accumulation order changes. Measured at hd128/seq8192/batch64:
+# 128 -> 1700ms, 64 -> 1337ms, 32 -> 1144ms, 16 -> 1086ms, 8 -> 1088ms.
+# 16 is the optimum (1.57x over 128); below it the scan length stops paying for
+# the per-chunk quadratic term. Re-measure for very different hidden_dim/seq_len.
+mamba_chunk_size: 16
 mamba_expand: 2
 mamba_conv_kernel: 4
 transformer_num_heads: 8
@@ -38,6 +43,10 @@ eval_every_n_steps: 200
 early_stop_patience: 5
 early_stop_min_delta: 0.0001
 log_train_ngram_after_training: false
+# 0 = the original half-epoch + end-of-epoch checkpoint cadence.
+# > 0 = checkpoint every N cumulative training tokens instead, plus one at the
+# end. Token milestones are comparable across corpora of different sizes.
+checkpoint_every_n_tokens: 0
 checkpoint_dir: "checkpoints/"
 results_dir: "results/"
 # Conditional entropy sampling

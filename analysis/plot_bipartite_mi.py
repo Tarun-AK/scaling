@@ -24,6 +24,7 @@ from matplotlib.lines import Line2D
 from tqdm import tqdm
 
 import wandb
+from analysis.ngram_split_utils import ngram_prefixes_for_split
 from analysis.plot_group_labels import distinct_group_labels
 
 WANDB_PROJECT = "tarunadvaith-/scaling"
@@ -62,20 +63,132 @@ DEFAULT_N_VALUES = [
     # 1348,
     # 1600,
     # 1800,
-    2048,
+    # 2048,
     3000,
     4096,
     5000,
     6000,
     7000,
     8192,
+    # 10000,
+    # 12000,
+    # 14000,
+    # 16384,
 ]
 DEFAULT_MIN_N = min(DEFAULT_N_VALUES)
-DEFAULT_MAX_N = 2048
+DEFAULT_MAX_N = 8192
 DEFAULT_NUM_N_VALUES = 40
 FIT_NMAX = 128
 FIT_NMIN = 1
+
+# Checkpoint selection. The trainer logs a mid-epoch artifact
+# (checkpoint-<run_id>-epoch-0000.5) alongside the end-of-epoch and final ones;
+# see training/trainer.py:_save_epoch_checkpoint.
+CHECKPOINT_FINAL = "final"
+CHECKPOINT_HALFWAY = "halfway"
+HALFWAY_EPOCH_LABEL = "0000.5"
+HALFWAY_EPOCH_VALUE = 0.5
+
+# Token-milestone checkpoints, written by trainer.py when
+# checkpoint_every_n_tokens > 0. Must match training/trainer.py's
+# TOKEN_LABEL_DIGITS / token_checkpoint_label.
+TOKEN_CHECKPOINT_PREFIX = "tokens-"
+TOKEN_LABEL_DIGITS = 13
+
 plt.style.use("~/plotStyle.mplstyle")
+
+
+def token_checkpoint(tokens: int) -> str:
+    """Checkpoint id for the milestone at ``tokens`` cumulative training tokens."""
+    return f"{TOKEN_CHECKPOINT_PREFIX}{int(tokens):0{TOKEN_LABEL_DIGITS}d}"
+
+
+def checkpoint_tokens(checkpoint: str) -> int | None:
+    """Token milestone of a checkpoint id, or None if it is not token-based."""
+    if not checkpoint.startswith(TOKEN_CHECKPOINT_PREFIX):
+        return None
+    return int(checkpoint[len(TOKEN_CHECKPOINT_PREFIX) :])
+
+
+def _cache_namespace(run_id: str, checkpoint: str) -> str:
+    """Cache directory key for a (run, checkpoint) pair.
+
+    The final checkpoint keeps the bare run_id so every cache written before
+    checkpoint selection existed stays valid; other checkpoints get their own
+    namespace so their samples/scores cannot collide with it.
+    """
+    if checkpoint == CHECKPOINT_FINAL:
+        return run_id
+    if checkpoint == CHECKPOINT_HALFWAY:
+        return f"{run_id}@epoch-{HALFWAY_EPOCH_LABEL}"
+    if checkpoint_tokens(checkpoint) is not None:
+        return f"{run_id}@{checkpoint}"
+    raise RuntimeError(
+        "Unsupported checkpoint. Expected "
+        f"'{CHECKPOINT_FINAL}', '{CHECKPOINT_HALFWAY}', or "
+        f"'{TOKEN_CHECKPOINT_PREFIX}<n>', got '{checkpoint}'"
+    )
+
+
+def _verify_checkpoint(restored: dict, run_id: str, checkpoint: str) -> None:
+    """Check a restored checkpoint belongs to this run and this epoch.
+
+    The epoch check guards the failure mode that matters here: if cache
+    namespacing were wrong, both series would silently be the same weights and
+    the resulting plot would look like a real (null) result.
+    """
+    ckpt_run_id = restored.get("wandb_run_id")
+    if ckpt_run_id != run_id:
+        raise RuntimeError(
+            f"Checkpoint/run mismatch: ckpt_run_id={ckpt_run_id}, run.id={run_id}"
+        )
+
+    milestone = checkpoint_tokens(checkpoint)
+    if milestone is not None:
+        tokens_seen = restored.get("tokens_seen")
+        if tokens_seen is None:
+            raise RuntimeError(
+                f"Checkpoint for run_id={run_id} has no tokens_seen; it was not "
+                f"written by token checkpointing (expected milestone {milestone:,})"
+            )
+        tokens_seen = int(tokens_seen)
+        # The milestone fires on the first batch that crosses it, so the exact
+        # count overshoots by less than one batch. Anything outside that band is
+        # a different checkpoint than the name claims.
+        ckpt_config = restored.get("config") or {}
+        batch_tokens = int(ckpt_config.get("batch_size", 0)) * int(
+            ckpt_config.get("seq_len", 0)
+        )
+        upper = milestone + batch_tokens if batch_tokens > 0 else milestone
+        if not milestone <= tokens_seen <= upper:
+            raise RuntimeError(
+                f"Checkpoint/token mismatch for run_id={run_id}: artifact claims "
+                f"milestone {milestone:,} but the checkpoint recorded "
+                f"tokens_seen={tokens_seen:,} (expected in "
+                f"[{milestone:,}, {upper:,}])"
+            )
+        return
+
+    restored_epoch = restored.get("epoch")
+    if checkpoint == CHECKPOINT_HALFWAY:
+        if (
+            restored_epoch is None
+            or abs(float(restored_epoch) - HALFWAY_EPOCH_VALUE) > 1e-6
+        ):
+            raise RuntimeError(
+                f"Checkpoint/epoch mismatch for run_id={run_id}: expected the "
+                f"halfway checkpoint (epoch={HALFWAY_EPOCH_VALUE}), "
+                f"got epoch={restored_epoch}"
+            )
+    elif (
+        restored_epoch is not None
+        and abs(float(restored_epoch) - HALFWAY_EPOCH_VALUE) <= 1e-6
+    ):
+        raise RuntimeError(
+            f"Checkpoint/epoch mismatch for run_id={run_id}: the final "
+            "checkpoint resolved to the halfway checkpoint "
+            f"(epoch={restored_epoch})"
+        )
 
 
 def _data_cache_key(
@@ -104,6 +217,32 @@ def _data_cache_paths(
     sample_cache_path = os.path.join(run_cache_dir, f"data_samples_{data_key}.npz")
     log_q_y_cache_path = os.path.join(run_cache_dir, f"data_log_q_y_{data_key}.npz")
     return sample_cache_path, log_q_y_cache_path
+
+
+def _find_any_data_cache_paths(
+    cache_dir: str,
+    run_id: str,
+    seq_len: int,
+    bos_token_id: int,
+) -> list[tuple[str, str]]:
+    run_cache_dir = os.path.join(os.path.abspath(cache_dir), run_id)
+    if not os.path.isdir(run_cache_dir):
+        return []
+
+    pattern = re.compile(
+        rf"^data_samples_data_(?P<split>.+)_seq{int(seq_len)}_numall_bos{int(bos_token_id)}\.npz$"
+    )
+    candidates: list[tuple[str, str]] = []
+    for filename in sorted(os.listdir(run_cache_dir)):
+        match = pattern.match(filename)
+        if match is None:
+            continue
+        sample_cache_path = os.path.join(run_cache_dir, filename)
+        log_q_y_cache_path = sample_cache_path.replace("data_samples_", "data_log_q_y_")
+        if os.path.exists(log_q_y_cache_path):
+            candidates.append((sample_cache_path, log_q_y_cache_path))
+
+    return candidates
 
 
 def _data_estimator_cache_path(
@@ -184,15 +323,10 @@ def _load_data_chunks(
     if num_samples is None:
         return np.asarray(data, dtype=np.int32)
 
+    if rng is None:
+        raise RuntimeError("rng must be provided when num_samples is set")
     take = int(num_samples)
-    if take <= num_rows:
-        if rng is None:
-            raise RuntimeError("rng must be provided when num_samples is set")
-        idx = rng.choice(num_rows, size=take, replace=False)
-    else:
-        if rng is None:
-            raise RuntimeError("rng must be provided when num_samples is set")
-        idx = rng.choice(num_rows, size=take, replace=True)
+    idx = rng.choice(num_rows, size=take, replace=take > num_rows)
     return np.array(data[idx], dtype=np.int32)
 
 
@@ -252,48 +386,113 @@ def _wandb_entity_project() -> tuple[str, str]:
     return entity, project
 
 
+def find_furthest_checkpoint_artifact(run_id: str, api: wandb.Api) -> str | None:
+    """Name of the artifact holding a run's furthest-trained weights, or None.
+
+    Used when ``checkpoint-<run_id>`` is absent. That artifact duplicates the
+    last epoch/token checkpoint, so it is safe to prune -- but then the final
+    weights have to be found by scanning the labelled checkpoints instead.
+
+    A run labels its checkpoints by epoch or by cumulative tokens, never both,
+    so token-labelled artifacts take precedence when present.
+    """
+    epoch_pattern = re.compile(
+        rf"^checkpoint-{re.escape(run_id)}-epoch-(\d{{4}}(?:\.\d{{1,2}})?):v\d+$"
+    )
+    token_pattern = re.compile(rf"^checkpoint-{re.escape(run_id)}-tokens-(\d+):v\d+$")
+    best_name: str | None = None
+    best_epoch = -1.0
+    best_tokens = -1.0
+    for logged_artifact in api.run(f"{WANDB_PROJECT}/{run_id}").logged_artifacts():
+        match = epoch_pattern.match(logged_artifact.name)
+        if match is not None:
+            epoch = float(match.group(1))
+            if best_tokens < 0 and epoch > best_epoch:
+                best_epoch = epoch
+                best_name = logged_artifact.name
+            continue
+        match = token_pattern.match(logged_artifact.name)
+        if match is not None:
+            tokens = float(match.group(1))
+            if tokens > best_tokens:
+                best_tokens = tokens
+                best_name = logged_artifact.name
+    return best_name
+
+
+def resolve_final_checkpoint_artifact(run_id: str, api: wandb.Api) -> str:
+    """Fully-qualified name of the artifact holding a run's final weights.
+
+    Prefers ``checkpoint-<run_id>:latest`` and falls back to the furthest-trained
+    labelled checkpoint, so callers keep working for runs whose redundant
+    unversioned artifact has been pruned.
+    """
+    entity, project = _wandb_entity_project()
+    artifact_name = f"{entity}/{project}/checkpoint-{run_id}:latest"
+    try:
+        api.artifact(artifact_name)
+        return artifact_name
+    except Exception:
+        fallback = find_furthest_checkpoint_artifact(run_id, api)
+        if fallback is None:
+            raise
+        print(
+            "Falling back to furthest-trained checkpoint artifact for "
+            f"run_id={run_id}: {fallback}"
+        )
+        return f"{WANDB_PROJECT}/{fallback}"
+
+
 def _download_checkpoint_artifact(
     run_id: str,
     api: wandb.Api,
     cache_dir: str,
+    checkpoint: str = CHECKPOINT_FINAL,
 ) -> str:
-    import re
-
     cache_dir = os.path.abspath(cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
-    cached_ckpt = os.path.join(cache_dir, run_id, "ckpt")
+    namespace = _cache_namespace(run_id, checkpoint)
+    cached_ckpt = os.path.join(cache_dir, namespace, "ckpt")
     if os.path.exists(cached_ckpt):
         return cached_ckpt
 
     entity, project = _wandb_entity_project()
-    artifact_name = f"{entity}/{project}/checkpoint-{run_id}:latest"
+    milestone = checkpoint_tokens(checkpoint)
+    if checkpoint == CHECKPOINT_HALFWAY:
+        artifact_name = (
+            f"{entity}/{project}/"
+            f"checkpoint-{run_id}-epoch-{HALFWAY_EPOCH_LABEL}:latest"
+        )
+    elif milestone is not None:
+        artifact_name = (
+            f"{entity}/{project}/checkpoint-{run_id}-{checkpoint}:latest"
+        )
+    else:
+        artifact_name = f"{entity}/{project}/checkpoint-{run_id}:latest"
+
     try:
         artifact = api.artifact(artifact_name)
-        artifact_dir = artifact.download(root=os.path.join(cache_dir, run_id))
+        artifact_dir = artifact.download(root=os.path.join(cache_dir, namespace))
         return os.path.join(artifact_dir, "ckpt")
-    except Exception:
-        run = api.run(f"{WANDB_PROJECT}/{run_id}")
-        pattern = re.compile(rf"^checkpoint-{re.escape(run_id)}-epoch-(\d{{4}}):v\d+$")
-        best_artifact_name = None
-        best_epoch = -1
-        for logged_artifact in run.logged_artifacts():
-            match = pattern.match(logged_artifact.name)
-            if match is None:
-                continue
-            epoch = int(match.group(1))
-            if epoch > best_epoch:
-                best_epoch = epoch
-                best_artifact_name = logged_artifact.name
+    except Exception as exc:
+        if checkpoint != CHECKPOINT_FINAL:
+            # Never fall back to a different checkpoint here: silently
+            # substituting one would corrupt the comparison.
+            raise RuntimeError(
+                f"No {checkpoint} checkpoint artifact for run_id={run_id} "
+                f"(expected {artifact_name})."
+            ) from exc
 
+        best_artifact_name = find_furthest_checkpoint_artifact(run_id, api)
         if best_artifact_name is None:
             raise
 
         print(
-            "Falling back to latest epoch checkpoint artifact for "
+            "Falling back to furthest-trained checkpoint artifact for "
             f"run_id={run_id}: {best_artifact_name}"
         )
         epoch_artifact = api.artifact(f"{WANDB_PROJECT}/{best_artifact_name}")
-        artifact_dir = epoch_artifact.download(root=os.path.join(cache_dir, run_id))
+        artifact_dir = epoch_artifact.download(root=os.path.join(cache_dir, namespace))
         return os.path.join(artifact_dir, "ckpt")
 
 
@@ -473,14 +672,15 @@ def _score_logps(
 
     @jax.jit
     def _score_batch(batch_tokens: jax.Array, batch_params: dict) -> jax.Array:
+        import optax
+
         inputs = _prepend_bos(batch_tokens, bos_token_id)
         logits = apply_fn({"params": batch_params}, inputs)
-        log_probs = jax.nn.log_softmax(logits, axis=-1)
-        return jnp.take_along_axis(
-            log_probs,
-            batch_tokens[:, :, None],
-            axis=-1,
-        ).squeeze(-1)
+        # Per-token log-prob without building a second (batch, seq_len, vocab)
+        # log-softmax array. At seq_len 8192 / vocab 10000 that intermediate is
+        # ~2.6GB per 8 sequences, and it is what pushed the lm_head matmul past
+        # what the GPU could plan.
+        return -optax.softmax_cross_entropy_with_integer_labels(logits, batch_tokens)
 
     all_logps = []
     num_batches = (num_tokens + batch_size - 1) // batch_size
@@ -920,20 +1120,19 @@ def _extract_ngram_index(name: str) -> int | None:
     return None
 
 
-def _combined_ngram_keys(keys: list[str]) -> list[str]:
-    return [
-        key
-        for key in keys
-        if key.startswith("combined/ngram_") or key.startswith("combined/n_gram_")
-    ]
+def _split_ngram_keys(keys: list[str], split: str) -> list[str]:
+    prefixes = ngram_prefixes_for_split(split)
+    return [key for key in keys if any(key.startswith(p) for p in prefixes)]
 
 
-def _extract_combined_ngram_losses(run: wandb.apis.public.Run) -> dict[int, float]:
+def _extract_split_ngram_losses(
+    run: wandb.apis.public.Run, split: str
+) -> dict[int, float]:
     out: dict[int, float] = {}
 
     summary = run.summary or {}
-    combined_keys = _combined_ngram_keys(list(summary.keys()))
-    for key in combined_keys:
+    matched_keys = _split_ngram_keys(list(summary.keys()), split)
+    for key in matched_keys:
         n = _extract_ngram_index(key)
         value = summary.get(key)
         if n is None:
@@ -948,18 +1147,18 @@ def _extract_combined_ngram_losses(run: wandb.apis.public.Run) -> dict[int, floa
         return out
 
     history_cols = list(run.history(samples=1).columns)
-    combined_keys = _combined_ngram_keys(history_cols)
-    if not combined_keys:
+    matched_keys = _split_ngram_keys(history_cols, split)
+    if not matched_keys:
         return out
-    history = run.history(keys=combined_keys, samples=10_000)
+    history = run.history(keys=matched_keys, samples=10_000)
     if history.empty:
         return out
 
-    valid = history[combined_keys].dropna(how="all")
+    valid = history[matched_keys].dropna(how="all")
     if valid.empty:
         return out
     last_row = valid.iloc[-1]
-    for key in combined_keys:
+    for key in matched_keys:
         n = _extract_ngram_index(key)
         value = last_row.get(key)
         if n is None:
@@ -973,14 +1172,35 @@ def _extract_combined_ngram_losses(run: wandb.apis.public.Run) -> dict[int, floa
     return out
 
 
+def _extract_averaged_ngram_losses(run: wandb.apis.public.Run) -> dict[int, float]:
+    """Average per-position n-gram losses across train/val/test.
+
+    Degrades gracefully: a given n is averaged over whichever of the three
+    splits actually have a logged value for it.
+    """
+    per_split = [
+        _extract_split_ngram_losses(run, split) for split in ("train", "val", "test")
+    ]
+    all_ns: set[int] = set()
+    for losses_by_n in per_split:
+        all_ns.update(losses_by_n.keys())
+
+    out: dict[int, float] = {}
+    for n in all_ns:
+        values = [losses_by_n[n] for losses_by_n in per_split if n in losses_by_n]
+        if values:
+            out[n] = float(np.mean(values))
+    return out
+
+
 def _compute_ngram_mi_for_run(
     run: wandb.apis.public.Run,
     n_values: list[int],
 ) -> dict[int, float]:
-    losses_by_n = _extract_combined_ngram_losses(run)
+    losses_by_n = _extract_averaged_ngram_losses(run)
     if not losses_by_n:
         raise RuntimeError(
-            "No combined n-gram losses found for run "
+            "No averaged (train/val/test) n-gram losses found for run "
             f"{run.id}; cannot compute n-gram MI estimator"
         )
 
@@ -990,7 +1210,7 @@ def _compute_ngram_mi_for_run(
     even_ns = [n for n in target_even_ns if n in losses_by_n]
     if not even_ns:
         raise RuntimeError(
-            "No requested default even N values found in combined n-gram losses for "
+            "No requested default even N values found in averaged n-gram losses for "
             f"run {run.id}; cannot compute n-gram MI estimator"
         )
 
@@ -1016,7 +1236,7 @@ def _compute_ngram_mi_for_run(
     if not out:
         raise RuntimeError(
             "No usable requested default even N values with complete 1..N prefix "
-            f"in combined n-gram losses for run {run.id}"
+            f"in averaged n-gram losses for run {run.id}"
         )
     return out
 
@@ -1100,9 +1320,11 @@ def _compute_lstm_sampled_mi_for_run(
     batch_size: int,
     cache_dir: str,
     force_resample: bool,
+    checkpoint: str = CHECKPOINT_FINAL,
 ) -> dict[int, float]:
     cfg = run.config or {}
     bos_token_id = int(cfg.get("bos_token_id", 0))
+    cache_ns = _cache_namespace(run.id, checkpoint)
     sample_key = _sample_cache_key(
         seq_len=n_values[-1],
         num_samples=num_samples,
@@ -1111,14 +1333,14 @@ def _compute_lstm_sampled_mi_for_run(
     )
     sample_cache_path, log_q_y_cache_path = _sample_cache_paths(
         cache_dir,
-        run.id,
+        cache_ns,
         sample_key,
     )
 
     if not force_resample:
         reusable_cache = _find_reusable_complete_cache(
             cache_dir=cache_dir,
-            run_id=run.id,
+            run_id=cache_ns,
             seq_len=n_values[-1],
             target_num_samples=num_samples,
             batch_size=batch_size,
@@ -1176,7 +1398,7 @@ def _compute_lstm_sampled_mi_for_run(
 
     from training.trainer import create_train_state
 
-    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
+    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir, checkpoint)
     model = _build_language_model_from_config(cfg)
     rng = jax.random.PRNGKey(0)
     state_cfg = SimpleNamespace(
@@ -1186,11 +1408,7 @@ def _compute_lstm_sampled_mi_for_run(
     )
     state = create_train_state(model, state_cfg, rng)
     state, restored = _load_checkpoint(ckpt_path, state)
-    ckpt_run_id = restored.get("wandb_run_id")
-    if ckpt_run_id != run.id:
-        raise RuntimeError(
-            f"Checkpoint/run mismatch: ckpt_run_id={ckpt_run_id}, run.id={run.id}"
-        )
+    _verify_checkpoint(restored, run.id, checkpoint)
 
     sample_params = _normalize_params_for_step(
         state.params,
@@ -1232,16 +1450,16 @@ def _compute_lstm_direct_mi_for_run_from_data(
     hidden_dim: int,
     n_values: list[int],
     *,
-    num_samples: int,
     batch_size: int,
     cache_dir: str,
     force_resample: bool,
     data_split: str,
-    data_seed: int,
     sanity_check: bool = False,
+    checkpoint: str = CHECKPOINT_FINAL,
 ) -> dict[int, float]:
     cfg = run.config or {}
     bos_token_id = int(cfg.get("bos_token_id", 0))
+    cache_ns = _cache_namespace(run.id, checkpoint)
     seq_len_required = int(n_values[-1])
     seq_len_data = int(cfg.get("seq_len", seq_len_required))
     if seq_len_required > seq_len_data:
@@ -1259,46 +1477,58 @@ def _compute_lstm_direct_mi_for_run_from_data(
     )
     sample_cache_path, log_q_y_cache_path = _data_cache_paths(
         cache_dir,
-        run.id,
+        cache_ns,
         data_key,
     )
 
     if not force_resample:
+        candidate_paths = []
         if os.path.exists(sample_cache_path) and os.path.exists(log_q_y_cache_path):
-            cached = _load_data_sample_cache(sample_cache_path)
-            if cached is not None:
-                samples, sample_logps = cached
-                log_q_y_means_by_n = _load_log_q_y_mean_cache(log_q_y_cache_path)
-                available_n_values = [
-                    int(n)
-                    for n in n_values
-                    if int(n) in log_q_y_means_by_n
-                    and int(n) <= int(sample_logps.shape[1])
-                ]
-                if available_n_values:
-                    print(
-                        "Using cached data direct MI for hidden_dim="
-                        f"{hidden_dim} from {os.path.basename(sample_cache_path)} "
-                        f"(num_samples={samples.shape[0]})"
-                    )
-                    if sanity_check:
-                        _sanity_check_direct_data_terms(
-                            sample_logps=sample_logps,
-                            log_q_y_means_by_n=log_q_y_means_by_n,
-                            n_values=available_n_values,
-                        )
-                    return _compute_bipartite_mi_from_sampled_q(
-                        sample_logps=sample_logps,
-                        n_values=available_n_values,
-                        log_q_y_means_by_n=log_q_y_means_by_n,
-                    )
-                print(
-                    "Skipping hidden_dim="
-                    f"{hidden_dim}: cached data direct MI has no usable N values"
+            candidate_paths.append((sample_cache_path, log_q_y_cache_path))
+        candidate_paths.extend(
+            path
+            for path in _find_any_data_cache_paths(
+                cache_dir=cache_dir,
+                run_id=cache_ns,
+                seq_len=seq_len_required,
+                bos_token_id=bos_token_id,
+            )
+            if path not in candidate_paths
+        )
+
+        for candidate_sample_path, candidate_log_q_y_path in candidate_paths:
+            cached = _load_data_sample_cache(candidate_sample_path)
+            if cached is None:
+                continue
+            samples, sample_logps = cached
+            log_q_y_means_by_n = _load_log_q_y_mean_cache(candidate_log_q_y_path)
+            available_n_values = [
+                int(n)
+                for n in n_values
+                if int(n) in log_q_y_means_by_n and int(n) <= int(sample_logps.shape[1])
+            ]
+            if not available_n_values:
+                continue
+            print(
+                "Using cached data direct MI for hidden_dim="
+                f"{hidden_dim} from {os.path.basename(candidate_sample_path)} "
+                f"(num_samples={samples.shape[0]})"
+            )
+            if sanity_check:
+                _sanity_check_direct_data_terms(
+                    sample_logps=sample_logps,
+                    log_q_y_means_by_n=log_q_y_means_by_n,
+                    n_values=available_n_values,
                 )
-                return {}
+            return _compute_bipartite_mi_from_sampled_q(
+                sample_logps=sample_logps,
+                n_values=available_n_values,
+                log_q_y_means_by_n=log_q_y_means_by_n,
+            )
+
         print(
-            "Skipping hidden_dim=" f"{hidden_dim}: no cached data direct MI available"
+            "Skipping hidden_dim="
+            f"{hidden_dim}: no cached data direct MI available"
         )
         return {}
 
@@ -1306,7 +1536,7 @@ def _compute_lstm_direct_mi_for_run_from_data(
 
     from training.trainer import create_train_state
 
-    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
+    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir, checkpoint)
     model = _build_language_model_from_config(cfg)
     rng = jax.random.PRNGKey(0)
     state_cfg = SimpleNamespace(
@@ -1316,11 +1546,7 @@ def _compute_lstm_direct_mi_for_run_from_data(
     )
     state = create_train_state(model, state_cfg, rng)
     state, restored = _load_checkpoint(ckpt_path, state)
-    ckpt_run_id = restored.get("wandb_run_id")
-    if ckpt_run_id != run.id:
-        raise RuntimeError(
-            f"Checkpoint/run mismatch: ckpt_run_id={ckpt_run_id}, run.id={run.id}"
-        )
+    _verify_checkpoint(restored, run.id, checkpoint)
 
     sample_params = _normalize_params_for_step(state.params, int(cfg["num_layers"]))
 
@@ -1375,15 +1601,15 @@ def _compute_lstm_v_club_for_run_from_data(
     hidden_dim: int,
     n_values: list[int],
     *,
-    num_samples: int,
     batch_size: int,
     cache_dir: str,
     force_resample: bool,
     data_split: str,
-    data_seed: int,
+    checkpoint: str = CHECKPOINT_FINAL,
 ) -> dict[int, float]:
     cfg = run.config or {}
     bos_token_id = int(cfg.get("bos_token_id", 0))
+    cache_ns = _cache_namespace(run.id, checkpoint)
     seq_len_required = int(n_values[-1])
     seq_len_data = int(cfg.get("seq_len", seq_len_required))
     if seq_len_required > seq_len_data:
@@ -1401,12 +1627,12 @@ def _compute_lstm_v_club_for_run_from_data(
     )
     sample_cache_path, _ = _data_cache_paths(
         cache_dir,
-        run.id,
+        cache_ns,
         data_key,
     )
     vclub_cache_path = _data_estimator_cache_path(
         cache_dir,
-        run.id,
+        cache_ns,
         data_key,
         "v-club",
     )
@@ -1439,7 +1665,7 @@ def _compute_lstm_v_club_for_run_from_data(
 
     from training.trainer import create_train_state
 
-    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
+    ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir, checkpoint)
     model = _build_language_model_from_config(cfg)
     rng = jax.random.PRNGKey(0)
     state_cfg = SimpleNamespace(
@@ -1449,34 +1675,28 @@ def _compute_lstm_v_club_for_run_from_data(
     )
     state = create_train_state(model, state_cfg, rng)
     state, restored = _load_checkpoint(ckpt_path, state)
-    ckpt_run_id = restored.get("wandb_run_id")
-    if ckpt_run_id != run.id:
-        raise RuntimeError(
-            f"Checkpoint/run mismatch: ckpt_run_id={ckpt_run_id}, run.id={run.id}"
-        )
+    _verify_checkpoint(restored, run.id, checkpoint)
 
     sample_params = _normalize_params_for_step(state.params, int(cfg["num_layers"]))
 
-    cached = None if force_resample else _load_data_sample_cache(sample_cache_path)
-    if cached is None:
-        samples_full = _load_data_chunks(
-            cfg=cfg,
-            split=data_split,
-            num_samples=None,
-            rng=None,
-        )
-        samples = np.array(samples_full[:, :seq_len_required], dtype=np.int32)
-        sample_logps = _score_logps(
-            apply_fn=state.apply_fn,
-            params=sample_params,
-            tokens=samples,
-            batch_size=batch_size,
-            bos_token_id=bos_token_id,
-            progress_desc=f"Scoring data samples d_h={hidden_dim}",
-        )
-        _save_data_sample_cache(sample_cache_path, samples, sample_logps)
-    else:
-        samples, sample_logps = cached
+    # Only reached with force_resample=True (the cache-only path returns above),
+    # so always rescore the split rather than consulting the sample cache.
+    samples_full = _load_data_chunks(
+        cfg=cfg,
+        split=data_split,
+        num_samples=None,
+        rng=None,
+    )
+    samples = np.array(samples_full[:, :seq_len_required], dtype=np.int32)
+    sample_logps = _score_logps(
+        apply_fn=state.apply_fn,
+        params=sample_params,
+        tokens=samples,
+        batch_size=batch_size,
+        bos_token_id=bos_token_id,
+        progress_desc=f"Scoring data samples d_h={hidden_dim}",
+    )
+    _save_data_sample_cache(sample_cache_path, samples, sample_logps)
 
     available_n_values = [
         int(n) for n in n_values if int(n) <= int(sample_logps.shape[1])
@@ -1486,9 +1706,7 @@ def _compute_lstm_v_club_for_run_from_data(
             f"No usable N values for data v-club hidden_dim={hidden_dim}"
         )
 
-    cached_vclub_values = (
-        {} if force_resample else _load_estimator_cache(vclub_cache_path)
-    )
+    cached_vclub_values: dict[int, float] = {}
     missing_n_values = [
         n for n in available_n_values if int(n) not in cached_vclub_values
     ]
@@ -1528,13 +1746,15 @@ def _compute_lstm_v_club_for_run(
     batch_size: int,
     cache_dir: str,
     force_resample: bool,
+    checkpoint: str = CHECKPOINT_FINAL,
 ) -> dict[int, float]:
     cfg = run.config or {}
     bos_token_id = int(cfg.get("bos_token_id", 0))
+    cache_ns = _cache_namespace(run.id, checkpoint)
 
     reusable_cache = _find_reusable_complete_cache(
         cache_dir=cache_dir,
-        run_id=run.id,
+        run_id=cache_ns,
         seq_len=n_values[-1],
         target_num_samples=num_samples,
         batch_size=batch_size,
@@ -1551,10 +1771,11 @@ def _compute_lstm_v_club_for_run(
             batch_size=batch_size,
             cache_dir=cache_dir,
             force_resample=True,
+            checkpoint=checkpoint,
         )
         reusable_cache = _find_reusable_complete_cache(
             cache_dir=cache_dir,
-            run_id=run.id,
+            run_id=cache_ns,
             seq_len=n_values[-1],
             target_num_samples=num_samples,
             batch_size=batch_size,
@@ -1592,7 +1813,7 @@ def _compute_lstm_v_club_for_run(
 
         from training.trainer import create_train_state
 
-        ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir)
+        ckpt_path = _download_checkpoint_artifact(run.id, api, cache_dir, checkpoint)
         model = _build_language_model_from_config(cfg)
         rng = jax.random.PRNGKey(0)
         state_cfg = SimpleNamespace(
@@ -1602,12 +1823,7 @@ def _compute_lstm_v_club_for_run(
         )
         state = create_train_state(model, state_cfg, rng)
         state, restored = _load_checkpoint(ckpt_path, state)
-        ckpt_run_id = restored.get("wandb_run_id")
-        if ckpt_run_id != run.id:
-            raise RuntimeError(
-                "Checkpoint/run mismatch: "
-                f"ckpt_run_id={ckpt_run_id}, run.id={run.id}"
-            )
+        _verify_checkpoint(restored, run.id, checkpoint)
         sample_params = _normalize_params_for_step(
             state.params,
             int(cfg["num_layers"]),
@@ -1636,6 +1852,19 @@ def _compute_lstm_v_club_for_run(
             f"No cached/computed v-club values for hidden_dim={hidden_dim}"
         )
     return run_vclub_values
+
+
+OFFSET_TAIL_POINTS = 3
+
+
+def _tail_offset(mi: np.ndarray) -> float:
+    """Saturation offset: mean MI over the largest N values of a series.
+
+    Matches the saturation convention in analysis/plot_mi_saturation.py
+    (_tail_averaged_mi_value). Assumes `mi` is ordered by ascending N.
+    """
+    tail = mi[-min(OFFSET_TAIL_POINTS, mi.size) :]
+    return float(np.mean(tail))
 
 
 def _fit_power_law(
@@ -1713,6 +1942,16 @@ def _plot_bipartite_mi(
     include_external: list[str] | None = None,
     fit_nmin: int = FIT_NMIN,
     fit_nmax: int = FIT_NMAX,
+    show_legend: bool = False,
+    linestyle_by_group: dict[str, str] | None = None,
+    show_style_legend: bool = False,
+    color_by_group: dict[str, float] | None = None,
+    colorbar_label: str = "hidden_dim",
+    colorbar_tick_format=None,
+    show_fit: bool = True,
+    subtract_offset: bool = False,
+    xscale: str = "log",
+    yscale: str = "log",
 ) -> None:
     series_keys = sorted(
         {
@@ -1728,10 +1967,26 @@ def _plot_bipartite_mi(
 
     fig, ax = plt.subplots(figsize=(12, 12))
     cmap = plt.cm.viridis
-    if len(hidden_dims) == 1:
+    # A plot carries exactly one colour scale. By default it encodes hidden_dim;
+    # color_by_group overrides it with a per-series value (e.g. training tokens)
+    # so a sweep over something other than hidden_dim reads off the colorbar.
+    if color_by_group:
+        color_values = sorted(set(color_by_group.values()))
+        if len(color_values) == 1:
+            norm = plt.Normalize(
+                vmin=color_values[0] * 0.99, vmax=color_values[0] * 1.01
+            )
+        else:
+            norm = plt.Normalize(vmin=min(color_values), vmax=max(color_values))
+    elif len(hidden_dims) == 1:
         norm = plt.Normalize(vmin=hidden_dims[0] - 1, vmax=hidden_dims[0] + 1)
     else:
         norm = plt.Normalize(vmin=min(hidden_dims), vmax=max(hidden_dims))
+
+    def _series_color(group_name: str, hidden_dim: int):
+        if color_by_group:
+            return cmap(norm(color_by_group[group_name]))
+        return cmap(norm(hidden_dim))
 
     marker_by_estimator = {
         "direct": "^",
@@ -1753,7 +2008,13 @@ def _plot_bipartite_mi(
                 continue
             ns = np.array(sorted(series.keys()), dtype=float)
             mi = np.array([series[int(n)] for n in ns], dtype=float)
-            color = cmap(norm(hidden_dim))
+            if subtract_offset and mi.size:
+                # I_inf - I(N): the remaining distance to saturation. Positive
+                # and decaying, so it is fittable as a power law in N (the fit
+                # then reports the decay exponent, not the growth exponent).
+                mi = _tail_offset(mi) - mi
+            color = _series_color(group_name, hidden_dim)
+            fit_linestyle = (linestyle_by_group or {}).get(group_name, ":")
             ax.scatter(
                 ns,
                 mi,
@@ -1767,6 +2028,9 @@ def _plot_bipartite_mi(
                 s=40,
                 alpha=0.5,
             )
+
+            if not show_fit:
+                continue
 
             fit = _fit_power_law(ns, mi, fit_nmin, fit_nmax)
             fit_window_mask = ns >= float(fit_nmin)
@@ -1786,7 +2050,7 @@ def _plot_bipartite_mi(
                     fit_ns,
                     fit_curve,
                     color=color,
-                    linestyle=":",
+                    linestyle=fit_linestyle,
                     linewidth=1.5,
                     alpha=0.8,
                 )
@@ -1815,6 +2079,10 @@ def _plot_bipartite_mi(
             order = np.argsort(ns_external)
             ns_external = ns_external[order]
             mi_external = mi_external[order]
+            if subtract_offset and mi_external.size:
+                # Same treatment as the model series, or the reference curves
+                # would sit at a different origin and not be comparable.
+                mi_external = _tail_offset(mi_external) - mi_external
             ext_color = ext_colors[ext_idx % len(ext_colors)]
             ext_marker = ext_markers[ext_idx % len(ext_markers)]
             ax.scatter(
@@ -1826,7 +2094,11 @@ def _plot_bipartite_mi(
                 s=48,
                 alpha=0.5,
             )
-            fit_ext = _fit_power_law(ns_external, mi_external, fit_nmin, fit_nmax)
+            fit_ext = (
+                _fit_power_law(ns_external, mi_external, fit_nmin, fit_nmax)
+                if show_fit
+                else None
+            )
             fit_window_mask = ns_external >= float(fit_nmin)
             if fit_nmax > 0:
                 fit_window_mask = fit_window_mask & (ns_external < float(fit_nmax))
@@ -1859,12 +2131,14 @@ def _plot_bipartite_mi(
                     (source_label, ext_color, ext_marker, False)
                 )
 
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlim(left=1)
+    ax.set_xscale(xscale)
+    ax.set_yscale(yscale)
+    # A log x-axis cannot include 0.
+    ax.set_xlim(left=1 if xscale == "log" else 0)
     ax.set_xlabel("N")
-    ax.set_ylabel(r"$I(A:B)$")
-    ax.set_title(title)
+    ax.set_ylabel(
+        r"$I_\infty - I(A:B)$" if subtract_offset else r"$I(A:B)$"
+    )
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
 
     colorbar = fig.colorbar(
@@ -1872,7 +2146,14 @@ def _plot_bipartite_mi(
         ax=ax,
         pad=0.02,
     )
-    colorbar.set_label("hidden_dim")
+    colorbar.set_label(colorbar_label)
+    if color_by_group:
+        # Tick the actual series values rather than an even sweep, so every
+        # curve is locatable on the bar.
+        ticks = sorted(set(color_by_group.values()))
+        colorbar.set_ticks(ticks)
+        if colorbar_tick_format is not None:
+            colorbar.set_ticklabels([colorbar_tick_format(t) for t in ticks])
 
     legend_handles: list[Line2D] = []
     for series_key in series_keys:
@@ -1896,7 +2177,10 @@ def _plot_bipartite_mi(
                 [0],
                 [0],
                 color=cmap(norm(hidden_dim)),
-                linestyle=":",
+                linestyle=(linestyle_by_group or {}).get(group_name, ":"),
+                marker=(
+                    marker_by_group[group_name] if len(marker_by_group) > 1 else None
+                ),
                 linewidth=1.5,
                 label=(
                     (
@@ -1920,14 +2204,51 @@ def _plot_bipartite_mi(
                 label=label,
             )
         )
-    # if legend_handles:
-    #     ax.legend(
-    #         handles=legend_handles,
-    #         loc="upper center",
-    #         bbox_to_anchor=(0.5, -0.08),
-    #         ncol=1,
-    #         frameon=False,
-    #     )
+    # Compact key for what each series group's marker/linestyle means, so
+    # series stay distinguishable where they overlap. Drawn in each series'
+    # own colour when the colorbar encodes the series variable, and in black
+    # when the colorbar encodes hidden_dim instead (where a coloured key would
+    # imply a second, unrelated scale).
+    style_legend_handles: list[Line2D] = []
+    if show_style_legend and len(marker_by_group) > 1:
+        for group_name in sorted(marker_by_group):
+            style_legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=(
+                        _series_color(group_name, hidden_dims[0])
+                        if color_by_group
+                        else "black"
+                    ),
+                    marker=marker_by_group[group_name],
+                    markerfacecolor="none",
+                    # The linestyle in this key refers to the fit line; with no
+                    # fits drawn it would point at something not on the plot.
+                    linestyle=(
+                        (linestyle_by_group or {}).get(group_name, ":")
+                        if show_fit
+                        else "none"
+                    ),
+                    linewidth=1.5,
+                    label=group_labels.get(group_name, group_name),
+                )
+            )
+
+    fit_legend = None
+    if show_legend and legend_handles:
+        fit_legend = ax.legend(
+            handles=legend_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.08),
+            ncol=1,
+            frameon=False,
+        )
+    if style_legend_handles:
+        # ax.legend() replaces any previous legend, so re-attach the fit legend.
+        if fit_legend is not None:
+            ax.add_artist(fit_legend)
+        ax.legend(handles=style_legend_handles, loc="upper left", frameon=False)
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fig.tight_layout(rect=(0.0, 0.03, 1.0, 1.0))
@@ -2019,6 +2340,77 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Force regeneration of direct caches instead of cache-only mode",
     )
     parser.add_argument(
+        "--compare-halfway",
+        action="store_true",
+        help=(
+            "Plot the mid-epoch checkpoint (checkpoint-<run_id>-epoch-"
+            f"{HALFWAY_EPOCH_LABEL}) alongside the final one, as two series per "
+            "run with distinct markers/linestyles. Anything not already cached "
+            "is computed from the checkpoint on demand."
+        ),
+    )
+    parser.add_argument(
+        "--subtract-offset",
+        action="store_true",
+        help=(
+            "Plot the remaining distance to saturation, I_inf - I(A:B), where "
+            f"I_inf is each series' mean I(A:B) over its largest "
+            f"{OFFSET_TAIL_POINTS} N values (same convention as "
+            "plot_mi_saturation). Positive and decaying toward 0, so the "
+            "power-law fit reports the decay exponent rather than the growth "
+            "exponent. Applies to external reference curves too."
+        ),
+    )
+    parser.add_argument(
+        "--linear-scale",
+        action="store_true",
+        help=(
+            "Shorthand for --xscale linear --yscale linear. Either of those "
+            "overrides it for that axis."
+        ),
+    )
+    parser.add_argument(
+        "--xscale",
+        choices=["log", "linear"],
+        default=None,
+        help="X axis scale (default: log, or linear under --linear-scale).",
+    )
+    parser.add_argument(
+        "--yscale",
+        choices=["log", "linear"],
+        default=None,
+        help="Y axis scale (default: log, or linear under --linear-scale).",
+    )
+    parser.add_argument(
+        "--no-fit",
+        action="store_true",
+        help=(
+            "Plot the MI points only: no power-law fit lines, no fitted "
+            "exponents printed, and no fit entries in the legend. Applies to "
+            "external reference curves too."
+        ),
+    )
+    parser.add_argument(
+        "--all-token-checkpoints",
+        action="store_true",
+        help=(
+            "Plot one series per token milestone (checkpoint-<run_id>-tokens-<n>), "
+            "discovered from the runs' logged artifacts. For runs trained with "
+            "checkpoint_every_n_tokens > 0."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-tokens",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Explicit token milestones to plot, instead of discovering them "
+            "with --all-token-checkpoints. Values must match the milestones "
+            "the run logged exactly."
+        ),
+    )
+    parser.add_argument(
         "--sanity-check-direct-data",
         action="store_true",
         help=(
@@ -2062,6 +2454,95 @@ def _validate_args(args: argparse.Namespace) -> None:
             )
 
 
+def _validate_checkpoint_args(args: argparse.Namespace) -> None:
+    selected = [
+        name
+        for name, value in (
+            ("--compare-halfway", args.compare_halfway),
+            ("--all-token-checkpoints", args.all_token_checkpoints),
+            ("--checkpoint-tokens", bool(args.checkpoint_tokens)),
+        )
+        if value
+    ]
+    if len(selected) > 1:
+        raise RuntimeError(
+            "Checkpoint selection flags are mutually exclusive; got "
+            + ", ".join(selected)
+        )
+    if args.checkpoint_tokens and any(n <= 0 for n in args.checkpoint_tokens):
+        raise RuntimeError("--checkpoint-tokens values must be > 0")
+    if args.all_token_checkpoints or args.checkpoint_tokens:
+        # Under token checkpoints the colorbar encodes training tokens, so a
+        # hidden_dim sweep in the same axes would need a second colour scale.
+        # One sweep per plot; run separate plots per hidden_dim and compare.
+        if not args.hidden_dim or len(args.hidden_dim) != 1:
+            raise RuntimeError(
+                "--all-token-checkpoints / --checkpoint-tokens require exactly "
+                "one --hidden-dim, because the colorbar is used for training "
+                "tokens. Got "
+                + (
+                    f"--hidden-dim {' '.join(str(h) for h in args.hidden_dim)}"
+                    if args.hidden_dim
+                    else "no --hidden-dim (all hidden dims in the group)"
+                )
+            )
+
+
+def _series_group_name(group_name: str, checkpoint: str, multi_checkpoint: bool) -> str:
+    """Series identity for the plot.
+
+    The checkpoint is folded into the group slot of the (group, hidden_dim)
+    series key so `_plot_bipartite_mi` keeps its existing 2-tuple contract
+    (plot_bipartite_mi_fixed_a/_fixed_b share it) while still giving each
+    checkpoint its own marker.
+    """
+    if not multi_checkpoint:
+        return group_name
+    if checkpoint == CHECKPOINT_HALFWAY:
+        return f"{group_name} @half"
+    if checkpoint == CHECKPOINT_FINAL:
+        return f"{group_name} @full"
+    return f"{group_name} @{checkpoint}"
+
+
+def _format_token_count(tokens: int) -> str:
+    if tokens >= 1_000_000_000:
+        return f"{tokens / 1e9:.2f}B"
+    if tokens >= 1_000_000:
+        return f"{tokens / 1e6:.0f}M"
+    return str(tokens)
+
+
+def _list_token_checkpoints(run) -> list[int]:
+    """Token milestones this run logged a checkpoint artifact for."""
+    pattern = re.compile(rf"^checkpoint-{re.escape(run.id)}-tokens-(\d+):v\d+$")
+    milestones: set[int] = set()
+    for logged_artifact in run.logged_artifacts():
+        match = pattern.match(logged_artifact.name)
+        if match is not None:
+            milestones.add(int(match.group(1)))
+    return sorted(milestones)
+
+
+def _compute_with_cache_fill(
+    compute,
+    *,
+    force_resample: bool,
+    fill_missing: bool,
+    desc: str,
+) -> dict[int, float]:
+    """Read from cache, and only compute from the checkpoint on a miss.
+
+    Used for --compare-halfway so that adding the half-epoch series does not
+    also force a recompute of the final-checkpoint series already cached.
+    """
+    values = compute(force_resample)
+    if values or force_resample or not fill_missing:
+        return values
+    print(f"No cache for {desc}; computing from checkpoint (this is the slow path)")
+    return compute(True)
+
+
 def _dedupe_estimators(estimator_args: list[str]) -> list[str]:
     estimators: list[str] = []
     for estimator in estimator_args:
@@ -2074,108 +2555,251 @@ def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
     _validate_args(args)
+    _validate_checkpoint_args(args)
     estimators = _dedupe_estimators(args.estimator)
 
-    n_values = [n for n in DEFAULT_N_VALUES if n <= int(args.max_n)]
-    if not n_values:
-        raise RuntimeError("No valid N values to evaluate")
-
     groups = list(dict.fromkeys(args.group))
-    group_labels = distinct_group_labels(groups) if len(groups) > 1 else {}
+    base_group_labels = distinct_group_labels(groups) if len(groups) > 1 else {}
 
     api = wandb.Api()
+    runs_by_group = {
+        group_name: _filter_runs_by_hidden_dim(
+            _resolve_group_runs(api, group_name), args.hidden_dim, group_name
+        )
+        for group_name in groups
+    }
+
+    compare_halfway = bool(args.compare_halfway)
+    milestones_by_run: dict[str, set[int]] = {}
+    if args.checkpoint_tokens or args.all_token_checkpoints:
+        for runs in runs_by_group.values():
+            for run in runs:
+                milestones_by_run[run.id] = set(_list_token_checkpoints(run))
+
+    if args.checkpoint_tokens:
+        milestones = sorted(dict.fromkeys(int(n) for n in args.checkpoint_tokens))
+    elif args.all_token_checkpoints:
+        # Union across runs so every milestone gets a series even when a run
+        # died early and is missing the later ones.
+        milestones = sorted(set().union(*milestones_by_run.values()))
+        if not milestones:
+            raise RuntimeError(
+                "--all-token-checkpoints found no checkpoint-<run_id>-tokens-<n> "
+                "artifacts. Only runs trained with checkpoint_every_n_tokens > 0 "
+                "have them."
+            )
+        print(
+            f"Found {len(milestones)} token milestones: "
+            + ", ".join(_format_token_count(n) for n in milestones)
+        )
+    else:
+        milestones = []
+
+    if milestones:
+        checkpoints = [token_checkpoint(n) for n in milestones]
+    elif compare_halfway:
+        checkpoints = [CHECKPOINT_HALFWAY, CHECKPOINT_FINAL]
+    else:
+        checkpoints = [CHECKPOINT_FINAL]
+    multi_checkpoint = len(checkpoints) > 1
+    # Compute on a cache miss whenever the user asked for specific checkpoints.
+    # Keyed on the selection, not on len(checkpoints): a single explicit
+    # --checkpoint-tokens value is still an explicit request, and cache-only
+    # there just fails with "No MI values available to plot". The bare
+    # (final-checkpoint) path stays cache-only, as the other scripts expect.
+    fill_missing_caches = multi_checkpoint or bool(milestones)
+
+    group_labels = dict(base_group_labels)
+    linestyle_by_group: dict[str, str] | None = None
+    color_by_group: dict[str, float] | None = {} if milestones else None
+    if multi_checkpoint:
+        # Distinct fit linestyle per checkpoint; dotted is the pre-existing
+        # style and is kept for the last (most-trained) series.
+        linestyle_cycle = ["--", "-.", (0, (3, 1, 1, 1)), (0, (5, 1)), (0, (1, 1)), "-"]
+        linestyle_by_group = {}
+        group_labels = {}
+        for group_name in groups:
+            base_label = base_group_labels.get(group_name, group_name)
+            for index, checkpoint in enumerate(checkpoints):
+                series_group = _series_group_name(group_name, checkpoint, True)
+                tokens = checkpoint_tokens(checkpoint)
+                if tokens is not None:
+                    ckpt_label = f"{_format_token_count(tokens)} tokens"
+                    color_by_group[series_group] = float(tokens)
+                elif checkpoint == CHECKPOINT_HALFWAY:
+                    ckpt_label = "half epoch"
+                else:
+                    ckpt_label = "full epoch"
+                linestyle_by_group[series_group] = (
+                    ":"
+                    if index == len(checkpoints) - 1
+                    else linestyle_cycle[index % len(linestyle_cycle)]
+                )
+                # With a single group the group name adds nothing to the key.
+                group_labels[series_group] = (
+                    ckpt_label if len(groups) == 1 else f"{base_label} ({ckpt_label})"
+                )
+
     all_values: dict[str, dict[tuple[str, int], dict[int, float]]] = {
         estimator: {} for estimator in estimators
     }
     for group_name in groups:
-        runs = _resolve_group_runs(api, group_name)
-        runs = _filter_runs_by_hidden_dim(runs, args.hidden_dim, group_name)
+        runs = runs_by_group[group_name]
         for run in tqdm(runs, desc=f"Runs[{group_name}]", unit="run"):
             cfg = run.config or {}
             hidden_dim = int(cfg["hidden_dim"])
-            series_key = (group_name, hidden_dim)
-
-            if "direct" in estimators:
-                if args.sample_source == "data":
-                    direct_values = _compute_lstm_direct_mi_for_run_from_data(
-                        run,
-                        api,
-                        hidden_dim,
-                        n_values,
-                        num_samples=args.num_samples,
-                        batch_size=args.batch_size,
-                        cache_dir=args.cache_dir,
-                        force_resample=args.force_resample,
-                        data_split=args.data_split,
-                        data_seed=args.data_seed,
-                        sanity_check=bool(args.sanity_check_direct_data),
-                    )
-                    if direct_values:
-                        all_values["direct"][series_key] = direct_values
-                else:
-                    direct_values = _compute_lstm_sampled_mi_for_run(
-                        run,
-                        api,
-                        hidden_dim,
-                        n_values,
-                        num_samples=args.num_samples,
-                        batch_size=args.batch_size,
-                        cache_dir=args.cache_dir,
-                        force_resample=args.force_resample,
-                        data_split=args.data_split,
-                        data_seed=args.data_seed,
-                    )
-                    if direct_values:
-                        all_values["direct"][series_key] = direct_values
-
-            if "v-club" in estimators:
-                if args.sample_source == "data":
-                    vclub_values = _compute_lstm_v_club_for_run_from_data(
-                        run,
-                        api,
-                        hidden_dim,
-                        n_values,
-                        num_samples=args.num_samples,
-                        batch_size=args.batch_size,
-                        cache_dir=args.cache_dir,
-                        force_resample=args.force_resample,
-                        data_split=args.data_split,
-                        data_seed=args.data_seed,
-                    )
-                    if vclub_values:
-                        all_values["v-club"][series_key] = vclub_values
-                else:
-                    vclub_values = _compute_lstm_v_club_for_run(
-                        run,
-                        api,
-                        hidden_dim,
-                        n_values,
-                        num_samples=args.num_samples,
-                        batch_size=args.batch_size,
-                        cache_dir=args.cache_dir,
-                        force_resample=args.force_resample,
-                    )
-                    if vclub_values:
-                        all_values["v-club"][series_key] = vclub_values
-
-            if "n-gram" in estimators:
-                all_values["n-gram"][series_key] = _compute_ngram_mi_for_run(
-                    run,
-                    n_values,
+            run_seq_len = int(cfg.get("seq_len", args.max_n))
+            n_values = [n for n in DEFAULT_N_VALUES if n <= run_seq_len]
+            if not n_values:
+                print(
+                    "Skipping hidden_dim="
+                    f"{hidden_dim}: no valid N values for seq_len={run_seq_len}"
                 )
+                continue
 
+            for ckpt_index, checkpoint in enumerate(checkpoints, start=1):
+                tokens = checkpoint_tokens(checkpoint)
+                if multi_checkpoint:
+                    label = (
+                        f"{_format_token_count(tokens)} tokens"
+                        if tokens is not None
+                        else checkpoint
+                    )
+                    print(
+                        f"[checkpoint {ckpt_index}/{len(checkpoints)}] "
+                        f"hidden_dim={hidden_dim} {label}",
+                        flush=True,
+                    )
+                if (
+                    tokens is not None
+                    and run.id in milestones_by_run
+                    and tokens not in milestones_by_run[run.id]
+                ):
+                    # A run that stopped early has no artifact for the later
+                    # milestones; drop those points rather than aborting the
+                    # whole plot on the download.
+                    print(
+                        f"Skipping hidden_dim={hidden_dim}: run {run.id} has no "
+                        f"checkpoint at {_format_token_count(tokens)} tokens"
+                    )
+                    continue
+                series_key = (
+                    _series_group_name(group_name, checkpoint, multi_checkpoint),
+                    hidden_dim,
+                )
+                desc = f"hidden_dim={hidden_dim} checkpoint={checkpoint}"
+
+                if "direct" in estimators:
+                    if args.sample_source == "data":
+                        direct_values = _compute_with_cache_fill(
+                            lambda force: _compute_lstm_direct_mi_for_run_from_data(
+                                run,
+                                api,
+                                hidden_dim,
+                                n_values,
+                                batch_size=args.batch_size,
+                                cache_dir=args.cache_dir,
+                                force_resample=force,
+                                data_split=args.data_split,
+                                sanity_check=bool(args.sanity_check_direct_data),
+                                checkpoint=checkpoint,
+                            ),
+                            force_resample=args.force_resample,
+                            fill_missing=fill_missing_caches,
+                            desc=f"direct/data {desc}",
+                        )
+                    else:
+                        direct_values = _compute_with_cache_fill(
+                            lambda force: _compute_lstm_sampled_mi_for_run(
+                                run,
+                                api,
+                                hidden_dim,
+                                n_values,
+                                num_samples=args.num_samples,
+                                batch_size=args.batch_size,
+                                cache_dir=args.cache_dir,
+                                force_resample=force,
+                                checkpoint=checkpoint,
+                            ),
+                            force_resample=args.force_resample,
+                            fill_missing=fill_missing_caches,
+                            desc=f"direct/model {desc}",
+                        )
+                    if direct_values:
+                        all_values["direct"][series_key] = direct_values
+
+                if "v-club" in estimators:
+                    if args.sample_source == "data":
+                        vclub_values = _compute_with_cache_fill(
+                            lambda force: _compute_lstm_v_club_for_run_from_data(
+                                run,
+                                api,
+                                hidden_dim,
+                                n_values,
+                                batch_size=args.batch_size,
+                                cache_dir=args.cache_dir,
+                                force_resample=force,
+                                data_split=args.data_split,
+                                checkpoint=checkpoint,
+                            ),
+                            force_resample=args.force_resample,
+                            fill_missing=fill_missing_caches,
+                            desc=f"v-club/data {desc}",
+                        )
+                    else:
+                        vclub_values = _compute_with_cache_fill(
+                            lambda force: _compute_lstm_v_club_for_run(
+                                run,
+                                api,
+                                hidden_dim,
+                                n_values,
+                                num_samples=args.num_samples,
+                                batch_size=args.batch_size,
+                                cache_dir=args.cache_dir,
+                                force_resample=force,
+                                checkpoint=checkpoint,
+                            ),
+                            force_resample=args.force_resample,
+                            fill_missing=fill_missing_caches,
+                            desc=f"v-club/model {desc}",
+                        )
+                    if vclub_values:
+                        all_values["v-club"][series_key] = vclub_values
+
+                if "n-gram" in estimators:
+                    # n-gram MI is read from the run's logged losses, which only
+                    # exist for the end of training -- there is no per-checkpoint
+                    # version, so it is attached to the final series only.
+                    if checkpoint != CHECKPOINT_FINAL:
+                        print(
+                            "Skipping n-gram estimator for "
+                            f"{desc}: n-gram losses are logged at end of training "
+                            "only and are not checkpoint-specific"
+                        )
+                    else:
+                        all_values["n-gram"][series_key] = _compute_ngram_mi_for_run(
+                            run,
+                            n_values,
+                        )
+
+    default_out_name = f"bipartite_mi_{'_'.join(groups)}"
+    if milestones:
+        default_out_name += f"_{len(milestones)}ckpt_tokens"
+    elif compare_halfway:
+        default_out_name += "_half_vs_full"
     out_path = (
-        args.output
-        if args.output is not None
-        else f"results/bipartite_mi_{'_'.join(groups)}.png"
+        args.output if args.output is not None else f"results/{default_out_name}.png"
     )
+    title = "Bipartite MI " f"({', '.join(estimators)}, groups={', '.join(groups)})"
+    if milestones:
+        title += " -- by training tokens"
+    elif compare_halfway:
+        title += " -- half vs full epoch"
     _plot_bipartite_mi(
         all_values,
         estimators,
         out_path,
-        title=(
-            "Bipartite MI " f"({', '.join(estimators)}, groups={', '.join(groups)})"
-        ),
+        title=title,
         group_labels=group_labels,
         include_external=(
             list(dict.fromkeys(args.include_external))
@@ -2184,6 +2808,15 @@ def main() -> None:
         ),
         fit_nmin=args.fit_nmin,
         fit_nmax=args.fit_nmax,
+        linestyle_by_group=linestyle_by_group,
+        show_style_legend=multi_checkpoint,
+        color_by_group=color_by_group or None,
+        colorbar_label=("training tokens" if milestones else "hidden_dim"),
+        colorbar_tick_format=(_format_token_count if milestones else None),
+        show_fit=not args.no_fit,
+        subtract_offset=args.subtract_offset,
+        xscale=(args.xscale or ("linear" if args.linear_scale else "log")),
+        yscale=(args.yscale or ("linear" if args.linear_scale else "log")),
     )
 
 
