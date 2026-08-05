@@ -18,9 +18,14 @@ transformer_ffn_mult: 2.6666666667
 transformer_rope_theta: 1000000.0
 transformer_layer_norm_epsilon: 1e-6
 transformer_tie_word_embeddings: true
+# null -> XLA attention (materializes the seq x seq scores, memory-bandwidth
+# bound at long seq_len). "cudnn" -> fused flash kernel; requires a GPU and
+# runs the attention core in bf16, since cuDNN rejects fp32.
+transformer_attention_impl: null
 num_layers: 1
 seq_len: 512
 batch_size: 64
+eval_batch_size: 64
 grad_accum_steps: 1
 learning_rate: 1e-3
 lr_schedule: "constant" # constant | warmup_cosine

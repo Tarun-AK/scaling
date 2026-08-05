@@ -16,3 +16,6 @@ __pycache__/
 /logs/
 /data/openwebtext_full_cache/
 /data/openwebtext_cache_seq16384/
+/data/owt_*.txt
+/data/owt_*.txt.gz
+/slurm_logs/

@@ -53,9 +53,11 @@ def create_train_state(
     tx: optax.GradientTransformation | None = None,
 ) -> TrainState:
     """Create an initialized TrainState."""
-    dummy_tokens = jnp.zeros(
-        (int(config.batch_size), int(config.seq_len)), dtype=jnp.int32
-    )
+    # Use the smallest practical dummy input for parameter initialization.
+    # The parameter shapes do not depend on the training batch size, and
+    # avoiding a full batch here keeps very long sequence runs from blowing up
+    # host memory during init/compile.
+    dummy_tokens = jnp.zeros((1, 1), dtype=jnp.int32)
     params = model.init(rng, dummy_tokens)["params"]
     if tx is None:
         tx = optax.adam(learning_rate=float(config.learning_rate))
@@ -558,21 +560,20 @@ def _post_training_evals_and_checkpoint(
     import wandb
 
     bos_token_id = int(getattr(config, "bos_token_id", 0))
+    eval_batch_size = int(getattr(config, "eval_batch_size", config.batch_size))
 
-    final_test_loss = _eval_loss(state, test_np, int(config.batch_size), bos_token_id)
+    final_test_loss = _eval_loss(state, test_np, eval_batch_size, bos_token_id)
     wandb.log({"test/loss": final_test_loss}, step=global_step)
 
-    test_mean = _eval_split(state, test_np, int(config.batch_size), bos_token_id)
+    test_mean = _eval_split(state, test_np, eval_batch_size, bos_token_id)
     wandb.log({f"test/{k}": v for k, v in test_mean.items()}, step=global_step)
 
     combined_np = np.concatenate([val_np, test_np], axis=0)
-    combined_mean = _eval_split(
-        state, combined_np, int(config.batch_size), bos_token_id
-    )
+    combined_mean = _eval_split(state, combined_np, eval_batch_size, bos_token_id)
     wandb.log({f"combined/{k}": v for k, v in combined_mean.items()})
 
     if bool(getattr(config, "log_train_ngram_after_training", False)):
-        train_mean = _eval_split(state, train_np, int(config.batch_size), bos_token_id)
+        train_mean = _eval_split(state, train_np, eval_batch_size, bos_token_id)
         wandb.log({f"train_ngram/{k}": v for k, v in train_mean.items()})
 
     entropy_num_samples = int(getattr(config, "entropy_num_samples", 0))
@@ -724,6 +725,12 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
             tie_word_embeddings=bool(
                 getattr(config, "transformer_tie_word_embeddings", True)
             ),
+            attention_impl=(
+                str(_impl)
+                if (_impl := getattr(config, "transformer_attention_impl", None))
+                and str(_impl).lower() not in {"none", "null", ""}
+                else None
+            ),
         )
     else:
         raise RuntimeError(
@@ -792,7 +799,8 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
         return {"dry_run": 1.0, "num_params": float(num_params)}
 
     # Initial validation before any training
-    initial_val_mean = _eval_split(state, val_np, int(config.batch_size), bos_token_id)
+    eval_batch_size = int(getattr(config, "eval_batch_size", config.batch_size))
+    initial_val_mean = _eval_split(state, val_np, eval_batch_size, bos_token_id)
     wandb.log({f"val/{k}": v for k, v in initial_val_mean.items()}, step=0)
 
     eval_every_n_steps = int(getattr(config, "eval_every_n_steps", 0))
@@ -803,9 +811,7 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
     plateau_count = 0
 
     if eval_every_n_steps > 0:
-        best_test_loss = _eval_loss(
-            state, test_np, int(config.batch_size), bos_token_id
-        )
+        best_test_loss = _eval_loss(state, test_np, eval_batch_size, bos_token_id)
         best_test_step = 0
         wandb.log({"test/loss": best_test_loss}, step=0)
 
@@ -918,7 +924,7 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
                 current_test_loss = _eval_loss(
                     state,
                     test_np,
-                    int(config.batch_size),
+                    eval_batch_size,
                     bos_token_id,
                 )
                 wandb.log({"test/loss": current_test_loss}, step=global_step)
@@ -942,7 +948,7 @@ def train_and_evaluate(config: Any) -> Dict[str, float]:
             break
 
         # Validation at end of each epoch
-        val_mean = _eval_split(state, val_np, int(config.batch_size), bos_token_id)
+        val_mean = _eval_split(state, val_np, eval_batch_size, bos_token_id)
         wandb.log({f"val/{k}": v for k, v in val_mean.items()}, step=global_step)
 
         epoch_idx = epoch + 1

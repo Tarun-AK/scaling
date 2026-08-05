@@ -48,6 +48,12 @@ class CausalSelfAttention(nn.Module):
     num_heads: int
     num_kv_heads: int
     rope_theta: float
+    # None -> XLA path (materializes the seq x seq score matrix, as before).
+    # "cudnn" -> fused flash kernel, which never writes that matrix to HBM.
+    # At seq_len 8192 the materialized scores are ~2.1GB per layer per sequence
+    # in fp32, which makes training memory-bandwidth-bound rather than
+    # compute-bound; "cudnn" is what removes that wall.
+    attention_impl: str | None = None
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -82,13 +88,18 @@ class CausalSelfAttention(nn.Module):
             v = jnp.repeat(v, repeat, axis=2)
 
         scale = head_dim**-0.5
-        scores = jnp.einsum("bthd,bshd->bhts", q, k) * scale
-
-        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
-        scores = jnp.where(causal_mask[None, None, :, :], scores, -1e30)
-        weights = nn.softmax(scores, axis=-1)
-
-        attn_out = jnp.einsum("bhts,bshd->bthd", weights, v)
+        # cuDNN's fused kernel accepts only fp16/bf16 -- passing fp32 raises
+        # rather than silently falling back, so cast just the attention core and
+        # return to the surrounding dtype. Projections stay in x.dtype.
+        compute_dtype = jnp.bfloat16 if self.attention_impl == "cudnn" else x.dtype
+        attn_out = jax.nn.dot_product_attention(
+            q.astype(compute_dtype),
+            k.astype(compute_dtype),
+            v.astype(compute_dtype),
+            scale=scale,
+            is_causal=True,
+            implementation=self.attention_impl,
+        ).astype(x.dtype)
         attn_out = attn_out.reshape(batch_size, seq_len, self.hidden_dim)
         return nn.Dense(self.hidden_dim, use_bias=False, name="o_proj")(attn_out)
 
@@ -113,6 +124,7 @@ class TransformerBlock(nn.Module):
     ffn_mult: float
     rope_theta: float
     layer_norm_epsilon: float = 1e-6
+    attention_impl: str | None = None
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -121,6 +133,7 @@ class TransformerBlock(nn.Module):
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
             rope_theta=self.rope_theta,
+            attention_impl=self.attention_impl,
             name="self_attn",
         )(RMSNorm(self.hidden_dim, eps=self.layer_norm_epsilon, name="attn_norm")(x))
         out = h + SwiGLUMLP(
@@ -141,6 +154,7 @@ class TransformerLanguageModel(nn.Module):
     rope_theta: float = 1_000_000.0
     layer_norm_epsilon: float = 1e-6
     tie_word_embeddings: bool = True
+    attention_impl: str | None = None
 
     def init_carry(self, batch_size: int) -> dict[str, jax.Array]:
         return {"tokens": jnp.zeros((batch_size, 0), dtype=jnp.int32)}
@@ -166,6 +180,7 @@ class TransformerLanguageModel(nn.Module):
                 ffn_mult=self.ffn_mult,
                 rope_theta=self.rope_theta,
                 layer_norm_epsilon=self.layer_norm_epsilon,
+                attention_impl=self.attention_impl,
                 name=f"layer_{layer_idx}",
             )(x)
 
