@@ -381,6 +381,32 @@ def main() -> None:
         help="Which n-gram split to plot; validation uses val/ngram_*",
     )
     parser.add_argument("--output", type=str, default="results/L.png")
+    parser.add_argument(
+        "--all-token-checkpoints",
+        action="store_true",
+        help=(
+            "One series per token checkpoint, coloured by training tokens, "
+            "read from the MI cache. The logged ngram metrics used by the "
+            "default path have no per-checkpoint dimension."
+        ),
+    )
+    parser.add_argument(
+        "--hidden-dim", type=int, nargs="+", default=None,
+        help="Optional hidden_dim filter for --all-token-checkpoints",
+    )
+    parser.add_argument(
+        "--cache-dir", type=str, default="checkpoints/bipartite_mi_cache",
+        help="MI cache directory to read scored log-probs from",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=32,
+        help="Batch size when scoring a checkpoint that is not cached yet",
+    )
+    parser.add_argument(
+        "--force-resample", action="store_true",
+        help="Rescore checkpoints even when cached log-probs exist",
+    )
+
     parser.add_argument("--max-hidden-dim", type=int, default=None)
     parser.add_argument(
         "--include-external",
@@ -395,6 +421,38 @@ def main() -> None:
         help="Plot raw points only, without fitting power laws",
     )
     args = parser.parse_args()
+
+    if args.all_token_checkpoints:
+        # Separate path: the logged ngram metrics the default path reads have
+        # no per-checkpoint dimension, so L_n comes from the MI cache instead.
+        from analysis.ngram_cache import (
+            ngram_losses_by_token_checkpoint,
+            plot_vs_hidden_dim_by_tokens,
+        )
+
+        if not args.group or len(args.group) != 1:
+            raise RuntimeError(
+                "--all-token-checkpoints requires exactly one --group"
+            )
+        ln = ngram_losses_by_token_checkpoint(
+            args.group[0],
+            hidden_dims=args.hidden_dim,
+            cache_dir=args.cache_dir,
+            data_split=(args.split if args.split in
+                        {"validation", "test", "train"} else "validation"),
+            batch_size=args.batch_size,
+            force_resample=args.force_resample,
+        )
+        points = (
+            ln.groupby(["hidden_dim", "tokens"], as_index=False)["loss"]
+            .mean()
+            .rename(columns={"loss": "l"})
+        )
+        plot_vs_hidden_dim_by_tokens(
+            points, "l", r"$L$", args.output, fit=not args.raw
+        )
+        return
+
 
     groups = args.group if args.group else [None]
     l_by_group: dict[str, pd.DataFrame] = {}

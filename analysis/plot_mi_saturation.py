@@ -26,6 +26,7 @@ from analysis.plot_bipartite_mi import (
     DEFAULT_N_VALUES,
     _compute_lstm_direct_mi_for_run_from_data,
     _compute_lstm_sampled_mi_for_run,
+    _compute_with_cache_fill,
     _filter_runs_by_hidden_dim,
     _format_token_count,
     _list_token_checkpoints,
@@ -396,30 +397,45 @@ def main() -> None:
                         f"checkpoint at {_format_token_count(int(tokens))} tokens"
                     )
                     continue
+                desc = f"hidden_dim={hidden_dim} checkpoint={checkpoint}"
+                # Compute on a cache miss rather than silently dropping the
+                # point. Reading cache-only meant a run that had never been
+                # scored just vanished from the plot with a one-line notice,
+                # and the remaining points still produced a confident fit.
                 if args.sample_source == "data":
-                    mi_series = _compute_lstm_direct_mi_for_run_from_data(
-                        run,
-                        api,
-                        hidden_dim,
-                        n_values,
-                        batch_size=args.batch_size,
-                        cache_dir=args.cache_dir,
+                    mi_series = _compute_with_cache_fill(
+                        lambda force: _compute_lstm_direct_mi_for_run_from_data(
+                            run,
+                            api,
+                            hidden_dim,
+                            n_values,
+                            batch_size=args.batch_size,
+                            cache_dir=args.cache_dir,
+                            force_resample=force,
+                            data_split=args.data_split,
+                            sanity_check=bool(args.sanity_check_direct_data),
+                            checkpoint=checkpoint,
+                        ),
                         force_resample=args.force_resample,
-                        data_split=args.data_split,
-                        sanity_check=bool(args.sanity_check_direct_data),
-                        checkpoint=checkpoint,
+                        fill_missing=True,
+                        desc=f"direct/data {desc}",
                     )
                 else:
-                    mi_series = _compute_lstm_sampled_mi_for_run(
-                        run,
-                        api,
-                        hidden_dim,
-                        n_values,
-                        num_samples=args.num_samples,
-                        batch_size=args.batch_size,
-                        cache_dir=args.cache_dir,
+                    mi_series = _compute_with_cache_fill(
+                        lambda force: _compute_lstm_sampled_mi_for_run(
+                            run,
+                            api,
+                            hidden_dim,
+                            n_values,
+                            num_samples=args.num_samples,
+                            batch_size=args.batch_size,
+                            cache_dir=args.cache_dir,
+                            force_resample=force,
+                            checkpoint=checkpoint,
+                        ),
                         force_resample=args.force_resample,
-                        checkpoint=checkpoint,
+                        fill_missing=True,
+                        desc=f"direct/model {desc}",
                     )
                 if not mi_series:
                     print(

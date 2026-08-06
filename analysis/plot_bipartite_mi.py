@@ -95,6 +95,87 @@ HALFWAY_EPOCH_VALUE = 0.5
 TOKEN_CHECKPOINT_PREFIX = "tokens-"
 TOKEN_LABEL_DIGITS = 13
 
+DEFAULT_CACHE_DIR = "checkpoints/bipartite_mi_cache"
+
+# Boundary for the "train_tail" split: training rows the run had not yet seen
+# when the 9.30B-token checkpoint fired. Every checkpoint at or below this
+# milestone is genuinely held out from those rows, giving ~0.92B tokens of
+# evaluation data (12.7x the validation split) rather than 72.6M.
+TRAIN_TAIL_AFTER_TOKENS = 9_296_646_144
+TRAIN_TAIL_SPLIT = "train_tail"
+
+# batch_iterator(shuffle=True, seed=epoch) with num_epochs=1 means the training
+# order is one fixed permutation seeded on 0, identical for every run over the
+# same corpus -- which is what makes the tail reproducible here.
+TRAIN_SHUFFLE_SEED = 0
+
+
+def _normalize_split(split: str) -> str:
+    """Bake the tail boundary into the split name so caches cannot collide.
+
+    A cache written for one boundary must not be reused for another, and the
+    cache key is derived from the split string.
+    """
+    if split == TRAIN_TAIL_SPLIT:
+        return f"{TRAIN_TAIL_SPLIT}{TRAIN_TAIL_AFTER_TOKENS}"
+    return split
+
+
+def _train_tail_boundary(split: str) -> int | None:
+    match = re.match(rf"^{TRAIN_TAIL_SPLIT}(\d+)$", split)
+    return int(match.group(1)) if match else None
+
+
+def _assert_split_held_out(split: str, checkpoint: str, run_id: str) -> None:
+    """Refuse to score a checkpoint on data it was trained on.
+
+    The train_tail split is only held out for checkpoints at or below its
+    boundary; the later ones consumed those exact rows. Scoring them anyway
+    would produce a number that looks like the others and is silently
+    train-set loss, so this is an error rather than a warning.
+    """
+    tail_after = _train_tail_boundary(split)
+    if tail_after is None:
+        return
+    tokens = checkpoint_tokens(checkpoint)
+    if tokens is None:
+        raise RuntimeError(
+            f"split='{split}' requires a token checkpoint (got '{checkpoint}' "
+            f"for run_id={run_id}); it cannot be shown to be held out otherwise"
+        )
+    if tokens > tail_after:
+        raise RuntimeError(
+            f"Checkpoint at {tokens:,} tokens trained on the "
+            f"'{split}' rows (boundary {tail_after:,}), so they are not held "
+            f"out for it. Exclude it, e.g. --checkpoint-tokens "
+            f"<milestones up to {tail_after:,}>."
+        )
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _localize_config_path(path: str | None) -> str | None:
+    """Rewrite a run-config path recorded on another machine to this checkout.
+
+    experiments/scaling_hidden_dim.py makes tokenizer_path/cache_dir/dataset_path
+    absolute against the launching machine's cwd before they are logged, so a run
+    trained elsewhere carries e.g. /home/<other-user>/scaling/... . Re-anchor
+    anything containing a '/scaling/' segment onto this repo when the recorded
+    path does not exist locally; leave it untouched otherwise so genuine
+    failures still surface with the original path.
+    """
+    if path is None:
+        return None
+    path = str(path)
+    if os.path.exists(path):
+        return path
+    marker = f"{os.sep}scaling{os.sep}"
+    if marker in path:
+        candidate = os.path.join(_REPO_ROOT, path.split(marker, 1)[1])
+        if os.path.exists(candidate):
+            return candidate
+    return path
+
 plt.style.use("~/plotStyle.mplstyle")
 
 
@@ -294,20 +375,49 @@ def _load_data_chunks(
     from data.dataset import load_splits_as_arrays
 
     dataset_config = cfg.get("dataset_config")
-    dataset_path = cfg.get("dataset_path")
+    dataset_path = _localize_config_path(cfg.get("dataset_path"))
     train_np, val_np, test_np = load_splits_as_arrays(
         dataset_name=str(cfg["dataset_name"]),
         dataset_config=dataset_config,
         seq_len=int(cfg["seq_len"]),
         vocab_size=int(cfg["vocab_size"]),
-        cache_dir=str(cfg.get("cache_dir", "data/cache")),
+        cache_dir=str(
+            _localize_config_path(cfg.get("cache_dir")) or "data/cache"
+        ),
         require_cache=bool(cfg.get("require_cached_data", True)),
         tokenize_batch_size=int(cfg.get("tokenize_batch_size", 32)),
-        tokenizer_path=str(cfg.get("tokenizer_path", "data/tokenizer/tokenizer.json")),
+        tokenizer_path=str(
+            _localize_config_path(cfg.get("tokenizer_path"))
+            or "data/tokenizer/tokenizer.json"
+        ),
         dataset_path=str(dataset_path) if dataset_path is not None else None,
     )
 
-    if split == "train":
+    tail_after = _train_tail_boundary(split)
+    if tail_after is not None:
+        batch_size = int(cfg["batch_size"])
+        tokens_per_batch = batch_size * int(cfg["seq_len"])
+        num_batches = int(train_np.shape[0]) // batch_size
+        # First batch index the run had NOT consumed at the boundary. ceil
+        # because a milestone fires on the batch that crosses it.
+        first_unseen_batch = -(-int(tail_after) // tokens_per_batch)
+        if first_unseen_batch >= num_batches:
+            raise RuntimeError(
+                f"train_tail boundary {tail_after:,} leaves no unseen batches "
+                f"(corpus has {num_batches} batches of {tokens_per_batch:,})"
+            )
+        indices = np.arange(int(train_np.shape[0]))
+        np.random.default_rng(TRAIN_SHUFFLE_SEED).shuffle(indices)
+        # Rows consumed from first_unseen_batch to the end of the epoch;
+        # drop_last means anything past num_batches*batch_size was never used.
+        tail = np.sort(indices[first_unseen_batch * batch_size : num_batches * batch_size])
+        print(
+            f"train_tail: {tail.size:,} rows "
+            f"({tail.size * int(cfg['seq_len']) / 1e9:.3f}B tokens) "
+            f"unseen after {tail_after:,} tokens"
+        )
+        data = train_np[tail]
+    elif split == "train":
         data = train_np
     elif split == "test":
         data = test_np
@@ -1460,6 +1570,8 @@ def _compute_lstm_direct_mi_for_run_from_data(
     cfg = run.config or {}
     bos_token_id = int(cfg.get("bos_token_id", 0))
     cache_ns = _cache_namespace(run.id, checkpoint)
+    data_split = _normalize_split(data_split)
+    _assert_split_held_out(data_split, checkpoint, run.id)
     seq_len_required = int(n_values[-1])
     seq_len_data = int(cfg.get("seq_len", seq_len_required))
     if seq_len_required > seq_len_data:
@@ -1610,6 +1722,8 @@ def _compute_lstm_v_club_for_run_from_data(
     cfg = run.config or {}
     bos_token_id = int(cfg.get("bos_token_id", 0))
     cache_ns = _cache_namespace(run.id, checkpoint)
+    data_split = _normalize_split(data_split)
+    _assert_split_held_out(data_split, checkpoint, run.id)
     seq_len_required = int(n_values[-1])
     seq_len_data = int(cfg.get("seq_len", seq_len_required))
     if seq_len_required > seq_len_data:
@@ -2303,7 +2417,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-split",
         type=str,
-        choices=["validation", "train", "test", "validation+test", "test+validation"],
+        choices=["validation", "train", "test", "validation+test", "test+validation", TRAIN_TAIL_SPLIT],
         default="validation",
         help=(
             "Which cached dataset split to draw chunks from when --sample-source=data; "
@@ -2331,7 +2445,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cache-dir",
         type=str,
-        default="checkpoints/bipartite_mi_cache",
+        default=DEFAULT_CACHE_DIR,
         help="Directory for MI cache",
     )
     parser.add_argument(
@@ -2513,15 +2627,69 @@ def _format_token_count(tokens: int) -> str:
     return str(tokens)
 
 
-def _list_token_checkpoints(run) -> list[int]:
-    """Token milestones this run logged a checkpoint artifact for."""
+def _local_token_checkpoints(run_id: str, cache_dir: str) -> set[int]:
+    """Token milestones with a restored checkpoint already on local disk."""
+    pattern = re.compile(rf"^{re.escape(run_id)}@{TOKEN_CHECKPOINT_PREFIX}(\d+)$")
+    milestones: set[int] = set()
+    if not os.path.isdir(cache_dir):
+        return milestones
+    for entry in os.listdir(cache_dir):
+        match = pattern.match(entry)
+        if match is not None and os.path.isdir(
+            os.path.join(cache_dir, entry, "ckpt")
+        ):
+            milestones.add(int(match.group(1)))
+    return milestones
+
+
+def _list_token_checkpoints(
+    run, cache_dir: str = DEFAULT_CACHE_DIR
+) -> list[int]:
+    """Token milestones available for this run, from wandb and local disk.
+
+    Unions both sources so that pruning a checkpoint artifact from wandb --
+    which is safe once the weights are cached locally, since
+    _download_checkpoint_artifact prefers the local copy -- cannot silently
+    drop a series from the plots that call this for discovery.
+    """
     pattern = re.compile(rf"^checkpoint-{re.escape(run.id)}-tokens-(\d+):v\d+$")
     milestones: set[int] = set()
     for logged_artifact in run.logged_artifacts():
         match = pattern.match(logged_artifact.name)
         if match is not None:
             milestones.add(int(match.group(1)))
+    milestones |= _local_token_checkpoints(run.id, cache_dir)
     return sorted(milestones)
+
+
+def _push_mi_to_wandb(
+    run,
+    *,
+    estimator: str,
+    data_split: str,
+    checkpoint: str,
+    values: dict[int, float],
+) -> None:
+    """Write the N -> I(A:B) series to the run's summary as flat scalars.
+
+    Flat keys (rather than a Table) so wandb surfaces them as sortable columns
+    in the runs view, which is what makes them comparable across runs. About
+    16 floats per checkpoint, so the space cost is negligible.
+    """
+    if not values:
+        return
+    tokens = checkpoint_tokens(checkpoint)
+    slot = f"tokens_{tokens:0{TOKEN_LABEL_DIGITS}d}" if tokens is not None else checkpoint
+    prefix = f"mi/{estimator}/{data_split}/{slot}"
+    try:
+        for n, value in sorted(values.items()):
+            run.summary[f"{prefix}/N_{int(n)}"] = float(value)
+        run.summary.update()
+        print(f"  pushed {len(values)} MI values to wandb under {prefix}/")
+    except Exception as exc:
+        # Never let a metrics push take down a computation that already
+        # succeeded; the cache on disk is the source of truth.
+        print(f"  WARNING: could not push MI to wandb ({type(exc).__name__}: {exc})")
 
 
 def _compute_with_cache_fill(
@@ -2727,6 +2895,13 @@ def main() -> None:
                         )
                     if direct_values:
                         all_values["direct"][series_key] = direct_values
+                        _push_mi_to_wandb(
+                            run,
+                            estimator="direct",
+                            data_split=_normalize_split(args.data_split),
+                            checkpoint=checkpoint,
+                            values=direct_values,
+                        )
 
                 if "v-club" in estimators:
                     if args.sample_source == "data":
@@ -2765,6 +2940,13 @@ def main() -> None:
                         )
                     if vclub_values:
                         all_values["v-club"][series_key] = vclub_values
+                        _push_mi_to_wandb(
+                            run,
+                            estimator="v-club",
+                            data_split=_normalize_split(args.data_split),
+                            checkpoint=checkpoint,
+                            values=vclub_values,
+                        )
 
                 if "n-gram" in estimators:
                     # n-gram MI is read from the run's logged losses, which only

@@ -157,33 +157,39 @@ def extract_l_ngrams(
     return pd.DataFrame(rows).sort_values(["hidden_dim", "n"])
 
 
-def fit_l_infinity(df: pd.DataFrame, fit_nmax: int = 50) -> pd.DataFrame:
+L_INF_TAIL_POINTS_DEFAULT = 100
+
+
+def fit_l_infinity(
+    df: pd.DataFrame, tail_points: int = L_INF_TAIL_POINTS_DEFAULT
+) -> pd.DataFrame:
+    """L_infinity as the mean of L_n over the largest `tail_points` values of n.
+
+    Previously this extrapolated the L_inf parameter of a
+    L_n = L_inf + c*n^alpha fit over n <= 50. That reads an asymptote off the
+    steepest part of the curve: L_n is still falling well past n = 1000, so the
+    fitted intercept is an extrapolation far outside the fitted window and is
+    sensitive to the window choice. Averaging the measured tail is a direct
+    estimate of the same quantity, and matches the saturation convention used
+    in analysis/plot_mi_saturation.py (_tail_averaged_mi_value).
+    """
     rows = []
     for hidden_dim, group in df.groupby("hidden_dim"):
         group = group.sort_values("n")
-        ns = group["n"].to_numpy(dtype=float)
         losses = group["loss"].to_numpy(dtype=float)
-        fit_mask = ns <= fit_nmax
-        ns_fit = ns[fit_mask]
-        losses_fit = losses[fit_mask]
-        if len(ns_fit) == 0:
+        finite = losses[np.isfinite(losses)]
+        if finite.size == 0:
             continue
-        p0 = [losses_fit[-1], losses_fit[0] - losses_fit[-1], -0.5]
-        try:
-            popt, _ = curve_fit(
-                power_law,
-                ns_fit,
-                losses_fit,
-                p0=p0,
-                maxfev=10_000,
-                bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, 0]),
-            )
-            l_inf = float(popt[0])
-        except RuntimeError:
-            l_inf = float(np.min(losses_fit))
-        rows.append({"hidden_dim": int(hidden_dim), "l_inf": l_inf})
+        tail = finite[-min(int(tail_points), finite.size) :]
+        rows.append(
+            {
+                "hidden_dim": int(hidden_dim),
+                "l_inf": float(np.mean(tail)),
+                "n_tail": int(tail.size),
+            }
+        )
     if not rows:
-        return pd.DataFrame(columns=["hidden_dim", "l_inf"])
+        return pd.DataFrame(columns=["hidden_dim", "l_inf", "n_tail"])
     return pd.DataFrame(rows).sort_values("hidden_dim")
 
 
@@ -398,7 +404,43 @@ def main() -> None:
         help="Which n-gram split to plot; validation uses val/ngram_*",
     )
     parser.add_argument("--output", type=str, default="results/L_infinity.png")
+    parser.add_argument(
+        "--all-token-checkpoints",
+        action="store_true",
+        help=(
+            "One series per token checkpoint, coloured by training tokens, "
+            "read from the MI cache. The logged ngram metrics used by the "
+            "default path have no per-checkpoint dimension."
+        ),
+    )
+    parser.add_argument(
+        "--hidden-dim", type=int, nargs="+", default=None,
+        help="Optional hidden_dim filter for --all-token-checkpoints",
+    )
+    parser.add_argument(
+        "--cache-dir", type=str, default="checkpoints/bipartite_mi_cache",
+        help="MI cache directory to read scored log-probs from",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=32,
+        help="Batch size when scoring a checkpoint that is not cached yet",
+    )
+    parser.add_argument(
+        "--force-resample", action="store_true",
+        help="Rescore checkpoints even when cached log-probs exist",
+    )
+
     parser.add_argument("--max-hidden-dim", type=int, default=None)
+    parser.add_argument(
+        "--l-inf-tail-points",
+        type=int,
+        default=L_INF_TAIL_POINTS_DEFAULT,
+        help=(
+            "L_infinity is the mean of L_n over this many largest n "
+            "(default %(default)s). Replaces the previous power-law "
+            "extrapolation of the L_inf parameter from n <= 50."
+        ),
+    )
     parser.add_argument(
         "--raw",
         action="store_true",
@@ -419,6 +461,41 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.all_token_checkpoints:
+        # Separate path: the logged ngram metrics the default path reads have
+        # no per-checkpoint dimension, so L_n comes from the MI cache instead.
+        from analysis.ngram_cache import (
+            ngram_losses_by_token_checkpoint,
+            plot_vs_hidden_dim_by_tokens,
+        )
+
+        if not args.group or len(args.group) != 1:
+            raise RuntimeError(
+                "--all-token-checkpoints requires exactly one --group"
+            )
+        ln = ngram_losses_by_token_checkpoint(
+            args.group[0],
+            hidden_dims=args.hidden_dim,
+            cache_dir=args.cache_dir,
+            data_split=(args.split if args.split in
+                        {"validation", "test", "train"} else "validation"),
+            batch_size=args.batch_size,
+            force_resample=args.force_resample,
+        )
+        points = (
+            ln.groupby(["hidden_dim", "tokens"], as_index=False)
+            .apply(lambda g: pd.Series({
+                "l_inf": float(g.sort_values("n")["loss"]
+                               .to_numpy()[-args.l_inf_tail_points:].mean())
+            }), include_groups=False)
+            .reset_index(drop=True)
+        )
+        plot_vs_hidden_dim_by_tokens(
+            points, "l_inf", r"$L_\infty$", args.output, fit=not args.raw
+        )
+        return
+
+
     groups = args.group if args.group else [None]
     group_names = [g for g in groups if g is not None]
     labels_by_group = distinct_group_labels(group_names)
@@ -438,7 +515,9 @@ def main() -> None:
                 .sort_values("hidden_dim")
             )
         else:
-            l_inf_by_group[key] = fit_l_infinity(l_n_df)
+            l_inf_by_group[key] = fit_l_infinity(
+                l_n_df, tail_points=args.l_inf_tail_points
+            )
         if key not in labels_by_group:
             labels_by_group[key] = key
 

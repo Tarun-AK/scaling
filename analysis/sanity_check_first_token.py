@@ -54,15 +54,14 @@ def _wandb_entity_project() -> tuple[str, str]:
 
 
 def _download_checkpoint_artifact(run_id: str, api: wandb.Api) -> str:
-    from analysis.plot_bipartite_mi import resolve_final_checkpoint_artifact
+    from analysis.plot_bipartite_mi import (
+        DEFAULT_CACHE_DIR,
+        _download_checkpoint_artifact as _shared,
+    )
 
-    # Resolves checkpoint-<run_id>:latest, falling back to the furthest-trained
-    # labelled checkpoint when that redundant artifact has been pruned.
-    artifact_name = resolve_final_checkpoint_artifact(run_id, api)
-    artifact = api.artifact(artifact_name)
-    tmpdir = tempfile.mkdtemp(prefix="ckpt_artifact_")
-    artifact_dir = artifact.download(root=tmpdir)
-    return os.path.join(artifact_dir, "ckpt")
+    # Shared implementation: returns the locally cached ckpt when present and
+    # only contacts wandb otherwise, so pruned artifacts still resolve.
+    return _shared(run_id, api, DEFAULT_CACHE_DIR)
 
 
 def _load_checkpoint(ckpt_path: str, state) -> tuple[Any, dict]:

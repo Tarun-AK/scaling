@@ -27,6 +27,166 @@ from analysis.plot_group_labels import distinct_group_labels
 from analysis.ngram_split_utils import ngram_prefixes_for_split
 
 
+def _ngram_losses_by_token_checkpoint(
+    group: str,
+    hidden_dim: int,
+    *,
+    cache_dir: str,
+    data_split: str,
+    batch_size: int,
+    force_resample: bool,
+) -> tuple[dict[int, np.ndarray], int]:
+    """L_n on the validation split, per token checkpoint, for one hidden_dim.
+
+    L_n = -E[log p(x_n | x_<n)] (training/metrics.py:compute_all_ngram_losses).
+    The MI cache already stores per-position log p(x_n | x_<n) for every
+    validation sequence, so L_n is the mean over sequences of the negatives --
+    no forward passes needed for anything already scored. Anything not scored
+    yet is computed via the usual estimator, which populates that same cache.
+    """
+    from analysis.plot_bipartite_mi import (
+        DEFAULT_N_VALUES,
+        _cache_namespace,
+        _compute_lstm_direct_mi_for_run_from_data,
+        _compute_with_cache_fill,
+        _data_cache_key,
+        _data_cache_paths,
+        _filter_runs_by_hidden_dim,
+        _list_token_checkpoints,
+        _load_sample_logps,
+        _resolve_group_runs,
+        token_checkpoint,
+    )
+
+    api = wandb.Api()
+    runs = _filter_runs_by_hidden_dim(
+        _resolve_group_runs(api, group), [int(hidden_dim)], group
+    )
+    if not runs:
+        raise RuntimeError(f"No run with hidden_dim={hidden_dim} in group='{group}'")
+    run = runs[0]
+
+    cfg = run.config or {}
+    bos_token_id = int(cfg.get("bos_token_id", 0))
+    run_seq_len = int(cfg.get("seq_len"))
+    n_values = [n for n in DEFAULT_N_VALUES if n <= run_seq_len]
+    if not n_values:
+        raise RuntimeError(f"No valid N values for seq_len={run_seq_len}")
+
+    milestones = _list_token_checkpoints(run)
+    if not milestones:
+        raise RuntimeError(
+            f"Run {run.id} logged no checkpoint-<run_id>-tokens-<n> artifacts; "
+            "only runs trained with checkpoint_every_n_tokens > 0 have them."
+        )
+    print(
+        f"{run.id} hd={hidden_dim}: {len(milestones)} token checkpoints ("
+        + ", ".join(f"{m / 1e9:.2f}B" for m in milestones)
+        + ")"
+    )
+
+    data_key = _data_cache_key(
+        split=data_split,
+        seq_len=int(n_values[-1]),
+        num_samples=None,
+        bos_token_id=bos_token_id,
+        seed=None,
+    )
+
+    losses: dict[int, np.ndarray] = {}
+    for tokens in milestones:
+        checkpoint = token_checkpoint(tokens)
+        namespace = _cache_namespace(run.id, checkpoint)
+        sample_path, _ = _data_cache_paths(cache_dir, namespace, data_key)
+        if force_resample or _load_sample_logps(sample_path) is None:
+            # Populate the cache through the normal estimator rather than
+            # duplicating the scoring code here.
+            _compute_with_cache_fill(
+                lambda force: _compute_lstm_direct_mi_for_run_from_data(
+                    run,
+                    api,
+                    int(hidden_dim),
+                    n_values,
+                    batch_size=batch_size,
+                    cache_dir=cache_dir,
+                    force_resample=force,
+                    data_split=data_split,
+                    checkpoint=checkpoint,
+                ),
+                force_resample=force_resample,
+                fill_missing=True,
+                desc=f"ngram/data hidden_dim={hidden_dim} checkpoint={checkpoint}",
+            )
+        sample_logps = _load_sample_logps(sample_path)
+        if sample_logps is None:
+            print(f"  no scored logps for {checkpoint}; skipping")
+            continue
+        losses[tokens] = -sample_logps.mean(axis=0)
+    if not losses:
+        raise RuntimeError("No n-gram losses available for any checkpoint")
+    return losses, run.id
+
+
+def _plot_ngrams_by_token_checkpoint(
+    losses: dict[int, np.ndarray],
+    hidden_dim: int,
+    out_path: str,
+    *,
+    xlim: tuple[int, int] | None,
+    ylim: tuple[float, float] | None,
+    dataset: str = "validation",
+) -> None:
+    """Same visual conventions as plot_ngrams: (12,12), scatter with black
+    edges at alpha 0.8, marker by split, log-log, "n" / "$L_n$". Only the
+    colour scale differs -- it encodes training tokens rather than hidden_dim,
+    since this plot fixes hidden_dim and varies the checkpoint.
+    """
+    from analysis.plot_bipartite_mi import _format_token_count
+
+    token_values = sorted(losses)
+    cmap = plt.cm.viridis
+    norm = plt.Normalize(vmin=token_values[0], vmax=token_values[-1])
+    marker = MARKER_BY_DATASET.get(dataset, "s")
+
+    figsize = (12, 12)
+    fig, ax = plt.subplots(figsize=figsize)
+    for tokens in token_values:
+        curve = losses[tokens]
+        ns = np.arange(1, curve.size + 1, dtype=float)
+        ax.scatter(
+            ns,
+            curve,
+            marker=marker,
+            edgecolors="black",
+            color=cmap(norm(tokens)),
+            alpha=0.8,
+        )
+
+    colorbar = fig.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, pad=0.02
+    )
+    colorbar.set_label("training tokens")
+    colorbar.set_ticks(token_values)
+    colorbar.set_ticklabels([_format_token_count(t) for t in token_values])
+
+    ax.set_xlabel("n")
+    ax.set_ylabel(r"$L_n$")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight", pad_inches=0.02)
+    print(f"Saved to {out_path}")
+    _show_image(out_path)
+
+
 def power_law(n, L_inf, c, power):
     return L_inf + c * np.power(n, power)
 
@@ -1003,6 +1163,51 @@ def main() -> None:
         help="W&B group to filter runs by",
     )
     parser.add_argument(
+        "--all-token-checkpoints",
+        action="store_true",
+        help=(
+            "Plot L_n for every token checkpoint of a single run, coloured by "
+            "training tokens. Requires exactly one --group and one "
+            "--hidden-dim. Reads per-position log-probs from the MI cache "
+            "(instant for anything already scored) instead of the run's logged "
+            "n-gram metrics, which only exist for the end of training."
+        ),
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="checkpoints/bipartite_mi_cache",
+        help="MI cache directory to read scored log-probs from",
+    )
+    parser.add_argument(
+        "--data-split",
+        type=str,
+        choices=["validation", "test", "train", "validation+test", "test+validation"],
+        default="validation",
+        help=(
+            "Which split to read scored log-probs for. 'validation+test' "
+            "concatenates both. Each split is cached separately, so anything "
+            "other than the one already scored costs a full scoring pass."
+        ),
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Batch size when scoring a checkpoint that is not cached yet",
+    )
+    parser.add_argument(
+        "--force-resample",
+        action="store_true",
+        help="Rescore checkpoints even when cached log-probs exist",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output plot path (used by --all-token-checkpoints)",
+    )
+    parser.add_argument(
         "--xlim",
         type=int,
         nargs=2,
@@ -1097,6 +1302,41 @@ def main() -> None:
         raise RuntimeError("--fit-no-offset and --plot-diff cannot be used together")
     xlim = tuple(args.xlim) if args.xlim else None
     ylim = tuple(args.ylim) if args.ylim else None
+
+    if args.all_token_checkpoints:
+        # Separate path: the logged-metric DataFrame the rest of this script is
+        # built on has no per-checkpoint dimension, so this reads L_n straight
+        # from the scored log-probs instead.
+        if not args.group or len(args.group) != 1:
+            raise RuntimeError(
+                "--all-token-checkpoints requires exactly one --group"
+            )
+        # The pre-existing --hidden-dim is nargs="+"; this path needs exactly
+        # one, since the colour scale is spent on training tokens.
+        if not args.hidden_dim or len(args.hidden_dim) != 1:
+            raise RuntimeError(
+                "--all-token-checkpoints requires exactly one --hidden-dim: "
+                "the colour scale is used for training tokens, so only one "
+                "run is plotted"
+            )
+        losses, run_id = _ngram_losses_by_token_checkpoint(
+            args.group[0],
+            int(args.hidden_dim[0]),
+            cache_dir=args.cache_dir,
+            data_split=args.data_split,
+            batch_size=args.batch_size,
+            force_resample=args.force_resample,
+        )
+        _plot_ngrams_by_token_checkpoint(
+            losses,
+            int(args.hidden_dim[0]),
+            args.output
+            or f"results/ngram_by_tokens_hd{int(args.hidden_dim[0])}_{run_id}.png",
+            xlim=xlim,
+            ylim=ylim,
+            dataset=args.data_split,
+        )
+        return
 
     if args.group:
         groups = list(dict.fromkeys(args.group))
