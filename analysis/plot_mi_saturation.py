@@ -28,8 +28,11 @@ from analysis.plot_bipartite_mi import (
     _compute_lstm_sampled_mi_for_run,
     _compute_with_cache_fill,
     _filter_runs_by_hidden_dim,
+    _drop_tail_milestone,
     _format_token_count,
     _list_token_checkpoints,
+    _normalize_split,
+    _read_mi_from_wandb,
     _resolve_group_runs,
     token_checkpoint,
 )
@@ -212,7 +215,7 @@ def main() -> None:
     parser.add_argument(
         "--data-split",
         type=str,
-        choices=["validation", "train", "test", "validation+test", "test+validation"],
+        choices=["validation", "train", "test", "validation+test", "test+validation", "train_tail"],
         default="validation",
         help="Which cached dataset split to draw chunks from when --sample-source=data",
     )
@@ -229,6 +232,14 @@ def main() -> None:
             "When --mi-estimator direct and --sample-source data, verify that "
             "E[log q(B|A)] equals -sum L_n computed from the scored data logps, "
             "and that the cached log q(B) scalars are consistent with per-position losses."
+        ),
+    )
+    parser.add_argument(
+        "--from-wandb",
+        action="store_true",
+        help=(
+            "Read the N -> I(A:B) series from each run's W&B summary instead of "
+            "scoring locally; saturation is then the tail average of that series."
         ),
     )
     parser.add_argument(
@@ -355,7 +366,9 @@ def main() -> None:
     if args.checkpoint_tokens:
         milestones = sorted(dict.fromkeys(int(n) for n in args.checkpoint_tokens))
     elif args.all_token_checkpoints:
-        milestones = sorted(set().union(*milestones_by_run.values()))
+        milestones = _drop_tail_milestone(
+            sorted(set().union(*milestones_by_run.values()))
+        )
         if not milestones:
             raise RuntimeError(
                 "--all-token-checkpoints found no checkpoint-<run_id>-tokens-<n> "
@@ -402,7 +415,14 @@ def main() -> None:
                 # point. Reading cache-only meant a run that had never been
                 # scored just vanished from the plot with a one-line notice,
                 # and the remaining points still produced a confident fit.
-                if args.sample_source == "data":
+                if args.from_wandb:
+                    mi_series = _read_mi_from_wandb(
+                        run,
+                        estimator=estimator,
+                        data_split=_normalize_split(args.data_split),
+                        checkpoint=checkpoint,
+                    )
+                elif args.sample_source == "data":
                     mi_series = _compute_with_cache_fill(
                         lambda force: _compute_lstm_direct_mi_for_run_from_data(
                             run,

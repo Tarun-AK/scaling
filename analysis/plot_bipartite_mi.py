@@ -2505,6 +2505,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--from-wandb",
+        action="store_true",
+        help=(
+            "Read the N -> I(A:B) series from each run's W&B summary (the keys "
+            "written after computing) instead of scoring locally. Lets you plot "
+            "results computed on another machine, with no checkpoints or data "
+            "cache needed."
+        ),
+    )
+    parser.add_argument(
         "--all-token-checkpoints",
         action="store_true",
         help=(
@@ -2642,6 +2652,23 @@ def _local_token_checkpoints(run_id: str, cache_dir: str) -> set[int]:
     return milestones
 
 
+def _drop_tail_milestone(milestones: list[int]) -> list[int]:
+    """Drop the end-of-training checkpoint, keeping the evenly spaced ones.
+
+    Milestones are named by the nominal multiple k*interval; the final one is
+    named by the exact token count at the end of the corpus, so it sits at an
+    irregular spacing (0.92B past the last milestone rather than 1.55B). That
+    makes it not comparable with the rest, and it is the one checkpoint that
+    trained on the train_tail rows. Identified structurally -- not a multiple
+    of the smallest milestone -- rather than by taking max().
+    """
+    if len(milestones) < 2:
+        return milestones
+    interval = min(milestones)
+    kept = [m for m in milestones if m % interval == 0]
+    return kept or milestones
+
+
 def _list_token_checkpoints(
     run, cache_dir: str = DEFAULT_CACHE_DIR
 ) -> list[int]:
@@ -2660,6 +2687,28 @@ def _list_token_checkpoints(
             milestones.add(int(match.group(1)))
     milestones |= _local_token_checkpoints(run.id, cache_dir)
     return sorted(milestones)
+
+
+def _read_mi_from_wandb(
+    run,
+    *,
+    estimator: str,
+    data_split: str,
+    checkpoint: str,
+) -> dict[int, float]:
+    """Read back a series written by _push_mi_to_wandb. Empty if absent."""
+    tokens = checkpoint_tokens(checkpoint)
+    slot = f"tokens_{tokens:0{TOKEN_LABEL_DIGITS}d}" if tokens is not None else checkpoint
+    prefix = f"mi/{estimator}/{data_split}/{slot}/N_"
+    values: dict[int, float] = {}
+    for key, value in dict(run.summary).items():
+        if not key.startswith(prefix):
+            continue
+        try:
+            values[int(key[len(prefix) :])] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return values
 
 
 def _push_mi_to_wandb(
@@ -2749,7 +2798,9 @@ def main() -> None:
     elif args.all_token_checkpoints:
         # Union across runs so every milestone gets a series even when a run
         # died early and is missing the later ones.
-        milestones = sorted(set().union(*milestones_by_run.values()))
+        milestones = _drop_tail_milestone(
+            sorted(set().union(*milestones_by_run.values()))
+        )
         if not milestones:
             raise RuntimeError(
                 "--all-token-checkpoints found no checkpoint-<run_id>-tokens-<n> "
@@ -2857,7 +2908,22 @@ def main() -> None:
                 )
                 desc = f"hidden_dim={hidden_dim} checkpoint={checkpoint}"
 
-                if "direct" in estimators:
+                if "direct" in estimators and args.from_wandb:
+                    # Read-only mode: no checkpoints, no data cache, no GPU.
+                    wandb_values = _read_mi_from_wandb(
+                        run,
+                        estimator="direct",
+                        data_split=_normalize_split(args.data_split),
+                        checkpoint=checkpoint,
+                    )
+                    if wandb_values:
+                        all_values["direct"][series_key] = wandb_values
+                    else:
+                        print(
+                            f"  no W&B MI series for {desc} "
+                            f"(split={_normalize_split(args.data_split)}); skipping"
+                        )
+                elif "direct" in estimators:
                     if args.sample_source == "data":
                         direct_values = _compute_with_cache_fill(
                             lambda force: _compute_lstm_direct_mi_for_run_from_data(
